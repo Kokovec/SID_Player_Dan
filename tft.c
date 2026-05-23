@@ -70,8 +70,8 @@ static void set_addr_window(int x0, int y0, int x1, int y1)
 
 static void hw_init(void)
 {
-    sleep_ms(120); /* allow display to power up before first command */
-    send_cmd(ST7735_SWRESET, NULL, 0); sleep_ms(150);
+    sleep_ms(500); /* cold-boot: display POR needs time before first command */
+    send_cmd(ST7735_SWRESET, NULL, 0); sleep_ms(200);
     send_cmd(ST7735_SLPOUT,  NULL, 0); sleep_ms(500);
 
     { static const uint8_t d[] = {0x01,0x2C,0x2D}; send_cmd(ST7735_FRMCTR1, d, 3); }
@@ -87,7 +87,7 @@ static void hw_init(void)
     { static const uint8_t d[] = {0x0E};            send_cmd(ST7735_VMCTR1, d, 1); }
 
     send_cmd(ST7735_INVOFF, NULL, 0);
-    { static const uint8_t d[] = {0x68}; send_cmd(ST7735_MADCTL, d, 1); } /* MX+MV: 90° CW landscape, RGB */
+    { static const uint8_t d[] = {0x60}; send_cmd(ST7735_MADCTL, d, 1); } /* MX+MV: 90° CW landscape, RGB order */
     { static const uint8_t d[] = {0x05}; send_cmd(ST7735_COLMOD, d, 1); } /* 16-bit colour */
 
     {
@@ -349,17 +349,24 @@ static int jpeg_out(JDEC *jd, void *bitmap, JRECT *rect)
 static bool load_jpeg_bg(const char *path)
 {
     FIL fp;
-    if (f_open(&fp, path, FA_READ) != FR_OK) return false;
-    JDEC jd;
+    if (f_open(&fp, path, FA_READ) != FR_OK) {
+        printf("JPEG: cannot open %s\r\n", path);
+        return false;
+    }
+    JDEC jd = {0};
     bool ok = false;
-    if (jd_prepare(&jd, jpeg_in, jpeg_work, sizeof(jpeg_work), &fp) == JDR_OK) {
-        /* choose smallest scale factor that fits the display */
+    JRESULT r = jd_prepare(&jd, jpeg_in, jpeg_work, sizeof(jpeg_work), &fp);
+    if (r == JDR_OK) {
         uint8_t scale = 0;
         while (scale < 3 &&
                ((jd.width  >> scale) > (uint16_t)TFT_W ||
                 (jd.height >> scale) > (uint16_t)TFT_H))
             scale++;
-        ok = (jd_decomp(&jd, jpeg_out, scale) == JDR_OK);
+        JRESULT r2 = jd_decomp(&jd, jpeg_out, scale);
+        if (r2 != JDR_OK) printf("JPEG: decomp error %d\r\n", (int)r2);
+        ok = (r2 == JDR_OK);
+    } else {
+        printf("JPEG: prepare error %d\r\n", (int)r);
     }
     f_close(&fp);
     return ok;
