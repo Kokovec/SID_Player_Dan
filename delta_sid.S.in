@@ -1,0 +1,13 @@
+    .section .rodata
+    .global  delta_sid_data
+    .type    delta_sid_data, %object
+delta_sid_data:
+    .incbin  "@CMAKE_CURRENT_SOURCE_DIR@/Delta.sid"
+delta_sid_data_end:
+    .size    delta_sid_data, delta_sid_data_end - delta_sid_data
+
+    .global  delta_sid_size
+    .type    delta_sid_size, %object
+    .size    delta_sid_size, 4
+delta_sid_size:
+    .word    delta_sid_data_end - delta_sid_data

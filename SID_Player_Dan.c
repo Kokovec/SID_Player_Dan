@@ -6,6 +6,7 @@
 #include "ff.h"
 #include "f_util.h"
 #include "hw_config.h"
+#include "tft.h"
 
 /* SID file header — all multi-byte fields are big-endian */
 typedef struct __attribute__((packed)) {
@@ -255,6 +256,9 @@ static bool play_sid_file(const char *path)
     printf("Songs   : %u  (default %u)\r\n", be16(h->songs), start_song);
     printf("Clock   : %s   Play rate: %u Hz\r\n", ntsc ? "NTSC" : "PAL", (unsigned)play_hz);
 
+    tft_show_track(path, title, author, released,
+                   be16(h->songs), start_song, ntsc, play_hz);
+
     /* Set phi2 clock for this tune's region */
     sid_set_clock(ntsc);
 
@@ -353,6 +357,7 @@ static bool get_sid_path(const char *drive, uint16_t idx,
 int main(void)
 {
     stdio_init_all();
+    tft_init();
     sid_init();
     btn_init();
 
