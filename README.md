@@ -27,4 +27,35 @@
 | 34 | GP28 | TFT DC | Display data/command select |
 | 3, 8, 13, 18, 23, 28, 33, 38 | GND | GND | Ground |
 | 36 | 3V3 | 3.3 V | Power, TFT RES, TFT BL |
-| 39 | VSYS | 5 V in | Main power input |
+| 39 | VSYS | 5 V in | Main power input | <br><br>
+
+| **SID Pin** | **Name** | **Description** |
+| --- | --- | --- |
+| 1 | CAP1A | Filter capacitor 1A |
+| 2 | CAP1B | Filter capacitor 1B |
+| 3 | CAP2A | Filter capacitor 2A |
+| 4 | CAP2B | Filter capacitor 2B |
+| 5 | ``/RES`` | Reset (active low) ← GP15 |
+| 6 | phi2 | Clock input ~1 MHz ← GP16 |
+| 7 | R/W | Read/Write (low = write) ← tied to GND |
+| 8 | ``/CS`` | Chip select (active low) ← GP13 |
+| 9 | A0 | Address bit 0 ← GP8 |
+| 10 | A1 | Address bit 1 ← GP9 |
+| 11 | A2 | Address bit 2 ← GP10 |
+| 12 | A3 | Address bit 3 ← GP11 |
+| 13 | A4 | Address bit 4 ← GP12 |
+| 14 | GND | Ground |
+| 15 | D0 | Data bit 0 ← GP0 |
+| 16 | D1 | Data bit 1 ← GP1 |
+| 17 | D2 | Data bit 2 ← GP2 |
+| 18 | D3 | Data bit 3 ← GP3 |
+| 19 | D4 | Data bit 4 ← GP4 |
+| 20 | D5 | Data bit 5 ← GP5 |
+| 21 | D6 | Data bit 6 ← GP6 |
+| 22 | D7 | Data bit 7 ← GP7 |
+| 23 | POTX | Potentiometer X (paddle) — unused |
+| 24 | POTY | Potentiometer Y (paddle) — unused |
+| 25 | VCC | +5 V supply |
+| 26 | EXT_IN | External audio input — unused (tie to GND) |
+| 27 | AUDIO OUT | Analog audio output |
+| 28 | VDD | +12 V (6581) or +9 V (8580) |
