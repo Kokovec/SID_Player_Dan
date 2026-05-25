@@ -20,6 +20,7 @@
 | 24 | GP18 | SD SCK | SD card clock |
 | 25 | GP19 | SD MOSI | SD card data in |
 | 26 | GP20 | SD MISO | SD card data out |
+| 27 | GP21 | NOT USED | NOT USED |
 | 29 | GP22 | BTN | Next‑track button (active low) |
 | 31 | GP26 | TFT SCK | Display SPI clock |
 | 32 | GP27 | TFT SDA | Display SPI data |
