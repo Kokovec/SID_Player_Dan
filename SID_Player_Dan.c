@@ -124,11 +124,49 @@ static bool btn_check(void)
 
 /* ------------------------------------------------------------------ */
 
-static uint8_t memory[65536];
+static bool     rsid_irq_active = false;  /* true only during RSID CIA IRQ playback */
+static M6502   *current_cpu     = NULL;   /* valid only inside play_sid_file */
+static uint8_t  memory[65536];
+static uint32_t dbg_sid_writes  = 0;
+
+/* CIA1 ($DC00-$DCFF) minimal emulation — tracks timer A only */
+static struct {
+    uint8_t timer_lo;   /* $DC04 */
+    uint8_t timer_hi;   /* $DC05 */
+    uint8_t cra;        /* $DC0E control register A */
+    bool    active;     /* timer A started (CRA bit 0 set) */
+} cia1;
+
+/* RSID re-entry detection: save/patch play-routine entry bytes to stop
+ * tunes that loop via direct JMP back to their own entry point. */
+static uint16_t rsid_play_entry   = 0;
+static uint8_t  rsid_play_orig[3] = {0, 0, 0};
+static uint32_t rsid_frame_writes = 0;
+static uint8_t  rsid_frame_s      = 0;
 
 static zuint8 cpu_read(void *ctx, zuint16 addr)
 {
     (void)ctx;
+    /* During RSID IRQ playback, reading $DC0D acknowledges the CIA1 timer A
+     * interrupt.  Real CIA hardware deasserts the IRQ line at this moment —
+     * emulate that so the play routine doesn't re-trigger on every m6502_run
+     * cycle after RTI restores I=0.  PSID tunes never enter this branch. */
+    if (addr == 0xDC0D && rsid_irq_active) {
+        if (current_cpu) m6502_irq(current_cpu, TRUE);  /* line HIGH = deassert */
+        return 0x81;
+    }
+    /* Re-entry into the play routine: redirect to idle loop.
+     * current_cpu->state.pc == addr distinguishes opcode fetches (re-entry via
+     * JMP) from data reads at the same address (false positives with write count).
+     * rsid_frame_writes > 0 skips the very first entry this frame. */
+    if (rsid_irq_active && rsid_play_entry && addr == rsid_play_entry
+        && current_cpu && current_cpu->state.pc == (zuint16)rsid_play_entry
+        && rsid_frame_writes > 0) {
+        memory[rsid_play_entry]     = 0x4C;
+        memory[rsid_play_entry + 1] = 0x00;
+        memory[rsid_play_entry + 2] = 0xE1;  /* JMP $E100 */
+        return 0x4C;
+    }
     return memory[addr];
 }
 
@@ -136,8 +174,20 @@ static void cpu_write(void *ctx, zuint16 addr, zuint8 val)
 {
     (void)ctx;
     memory[addr] = val;
-    if (addr >= 0xD400 && addr <= 0xD41C)
+    if (addr >= 0xD400 && addr <= 0xD41C) {
+        dbg_sid_writes++;
+        rsid_frame_writes++;
         sid_write((uint8_t)(addr & 0x1F), val);
+    } else if (addr >= 0xDC00 && addr <= 0xDCFF) {
+        switch (addr & 0xFF) {
+            case 0x04: cia1.timer_lo = val; break;
+            case 0x05: cia1.timer_hi = val; break;
+            case 0x0E:
+                cia1.cra = val;
+                if (val & 0x01) cia1.active = true;
+                break;
+        }
+    }
 }
 
 /* Call a 6502 subroutine by pushing a sentinel return address onto the
@@ -179,17 +229,21 @@ static void call_routine(M6502 *cpu, uint16_t addr, uint8_t a, uint8_t x, uint8_
 static bool is_sid_file(const char *name)
 {
     size_t n = strlen(name);
-    if (n < 5) return false;
-    const char *e = name + n - 4;
-    return e[0] == '.' &&
-           (e[1] == 's' || e[1] == 'S') &&
-           (e[2] == 'i' || e[2] == 'I') &&
-           (e[3] == 'd' || e[3] == 'D');
+    if (n >= 5) {
+        const char *e = name + n - 4;
+        if (e[0] == '.' &&
+            (e[1] == 's' || e[1] == 'S') &&
+            (e[2] == 'i' || e[2] == 'I') &&
+            (e[3] == 'd' || e[3] == 'D'))
+            return true;
+    }
+    return false;
 }
 
 /* Load a SID file from the SD card, run INIT, then call PLAY at the
- * correct rate for PLAY_SECONDS.  Returns false if the file is invalid
- * or unplayable (RSID / missing play address). */
+ * correct rate until the next-track button is pressed.
+ * PSID (play_addr != 0): direct polling.
+ * RSID (play_addr == 0): CIA1 timer A drives IRQ-based playback. */
 static bool play_sid_file(const char *path)
 {
     FIL    fil;
@@ -227,13 +281,6 @@ static bool play_sid_file(const char *path)
     uint16_t start_song  = be16(h->start_song);
     uint32_t speed       = be32(h->speed);
 
-    if (play_addr == 0) {
-        /* RSID / NMI-driven tunes require CIA emulation — skip for now */
-        printf("Skipping %s: play_addr=0 (interrupt-driven)\r\n", path);
-        f_close(&fil);
-        return false;
-    }
-
     /* Determine clock (PAL / NTSC) and play rate from header flags */
     bool ntsc = false;
     if (version >= 2 && data_offset >= 0x7C) {
@@ -256,19 +303,51 @@ static bool play_sid_file(const char *path)
     printf("Songs   : %u  (default %u)\r\n", be16(h->songs), start_song);
     printf("Clock   : %s   Play rate: %u Hz\r\n", ntsc ? "NTSC" : "PAL", (unsigned)play_hz);
 
+    rsid_irq_active = false;
+
     tft_show_track(path, title, author, released,
                    be16(h->songs), start_song, ntsc, play_hz);
 
     /* Set phi2 clock for this tune's region */
     sid_set_clock(ntsc);
 
+    /* Reset CIA1 state before loading a new tune */
+    memset(&cia1, 0, sizeof(cia1));
+
     /* Prepare 6502 memory: clear, fill KERNAL stubs, place sentinel */
     memset(memory, 0x00, sizeof(memory));
     memset(&memory[0xE000], 0x60, 0x1FFE);  /* RTS stubs for KERNAL area */
-    memory[0xE000] = 0x40;                  /* RTI — NMI/IRQ handler */
+    memory[0xE000] = 0x40;                  /* RTI — NMI handler */
+
+    /* IRQ dispatch at $FF48: bare JMP ($0314) — no push/pop.
+     *
+     * We intentionally do NOT replicate the real KERNAL's PHA/TXA/PHA/TYA/PHA
+     * sequence.  RSID play routines fall into two families:
+     *   A) Self-contained: push A/X/Y themselves, end with RTI.
+     *      With our bare dispatch the interrupt frame (P + PC) is the only
+     *      thing on the stack; their own push/RTI sequence is balanced. ✓
+     *   B) KERNAL-integrated: assume nothing was pushed, end with JMP $EA31.
+     *      Our $EA31 = RTI, which cleanly pops the interrupt frame. ✓
+     *
+     * A full KERNAL push breaks family (A): their RTI would pop the KERNAL's
+     * Y/X/A bytes as flags+PC and jump to garbage. */
+    /* $FF48 dispatches via $0316 (secondary vector we control).
+     * We copy $0314 → $0316 after INIT, then reset $0314 → RTI.
+     * Tunes that loop via JMP ($0314) hit RTI instead of re-entering. */
+    memory[0xFF48] = 0x6C; memory[0xFF49] = 0x16; memory[0xFF4A] = 0x03; /* JMP ($0316) */
+
+    /* Common KERNAL IRQ exit addresses — all become RTI. */
+    memory[0xEA31] = 0x40;
+    memory[0xEA81] = 0x40;
+    memory[0xFE66] = 0x40;
+
+    /* Default vectors: $0314/$0316 → $E000 (RTI) until INIT installs a handler */
+    memory[0x0314] = 0x00; memory[0x0315] = 0xE0;
+    memory[0x0316] = 0x00; memory[0x0317] = 0xE0;
+
     memory[0xFFFA] = 0x00; memory[0xFFFB] = 0xE0;  /* NMI vector → $E000 */
-    memory[0xFFFE] = 0x00; memory[0xFFFF] = 0xE0;  /* IRQ vector → $E000 */
-    memory[SENTINEL] = 0x60;               /* RTS at sentinel */
+    memory[0xFFFE] = 0x48; memory[0xFFFF] = 0xFF;  /* IRQ vector → $FF48 */
+    memory[SENTINEL] = 0x60;                        /* RTS at sentinel */
 
     /* Seek to binary data, resolve embedded load address if needed */
     fr = f_lseek(&fil, data_offset);
@@ -302,23 +381,148 @@ static bool play_sid_file(const char *path)
     m6502_power(&cpu, TRUE);
     call_routine(&cpu, init_addr, song_idx, 0, 0);
 
-    /* Play loop — runs until the next-track button is pressed */
-    const uint64_t frame_us  = 1000000ULL / play_hz;
-    uint64_t       next_frame = time_us_64() + frame_us;
+    if (play_addr != 0) {
+        /* PSID: poll the play routine at the declared rate */
+        const uint64_t frame_us  = 1000000ULL / play_hz;
+        uint64_t       next_frame = time_us_64() + frame_us;
+        uint64_t dbg_t0 = time_us_64(); uint32_t dbg_n = 0;
+        dbg_sid_writes = 0;
+        for (;;) {
+            call_routine(&cpu, play_addr, 0, 0, 0);
+            if (++dbg_n == 50) {
+                uint32_t dt = (uint32_t)(time_us_64() - dbg_t0);
+                printf("50 frames: %u us (%u Hz)  SID/frame: %u\r\n",
+                       dt, 50000000u / dt, dbg_sid_writes / 50);
+                dbg_t0 = time_us_64(); dbg_n = 0;
+                dbg_sid_writes = 0;
+            }
+            if (btn_check()) break;
+            while (time_us_64() < next_frame)
+                ;
+            next_frame += frame_us;
+        }
+    } else {
+        /* RSID: CIA1 timer A drives IRQ-based playback.
+         * After INIT the tune has written its play routine into $0314-$0315
+         * and programmed the CIA1 timer.  We fire m6502_irq() at that rate
+         * and let the KERNAL trampoline at $FF48 dispatch to the tune. */
+        uint32_t cpu_hz_val = ntsc ? 1022727u : 985248u;
+        uint32_t timer_val  = ((uint32_t)cia1.timer_hi << 8) | cia1.timer_lo;
+        if (timer_val == 0 || !cia1.active)
+            timer_val = ntsc ? 0x4295u : 0x4CC5u;  /* fallback ~60 / ~50 Hz */
+        uint32_t rsid_hz = cpu_hz_val / (timer_val + 1);
+        if (rsid_hz < 20 || rsid_hz > 300)
+            rsid_hz = ntsc ? 60u : 50u;
+        /* Copy INIT's play-routine vector from $0314 to $0316, then reset
+         * $0314 → RTI.  Tunes that end via JMP ($0314) (self-re-entry loop)
+         * now hit RTI and exit cleanly instead of looping within the budget.
+         *
+         * Fallback: some tunes (e.g. Martin Galway) bypass the KERNAL vector
+         * table and write directly to the hardware IRQ vector $FFFE/$FFFF.
+         * If $0314 is still at our default ($E000) after INIT, check whether
+         * INIT changed $FFFE/$FFFF away from our $FF48 stub and use that. */
+        memory[0x0316] = memory[0x0314];
+        memory[0x0317] = memory[0x0315];
+        memory[0x0314] = 0x00; memory[0x0315] = 0xE0;  /* $0314 → $E000 = RTI */
+        {
+            uint16_t via_0316 = (uint16_t)memory[0x0316] | ((uint16_t)memory[0x0317] << 8);
+            uint16_t via_fffe = (uint16_t)memory[0xFFFE] | ((uint16_t)memory[0xFFFF] << 8);
+            if (via_0316 == 0xE000 && via_fffe != 0xFF48) {
+                memory[0x0316] = memory[0xFFFE];
+                memory[0x0317] = memory[0xFFFF];
+                memory[0xFFFE] = 0x48; memory[0xFFFF] = 0xFF;  /* restore our stub */
+            }
+        }
 
-    for (;;) {
-        call_routine(&cpu, play_addr, 0, 0, 0);
-        if (btn_check()) break;
-        while (time_us_64() < next_frame)
-            ;
-        next_frame += frame_us;
+        rsid_play_entry   = (uint16_t)memory[0x0316] | ((uint16_t)memory[0x0317] << 8);
+        rsid_play_orig[0] = memory[rsid_play_entry];
+        rsid_play_orig[1] = memory[rsid_play_entry + 1];
+        rsid_play_orig[2] = memory[rsid_play_entry + 2];
+
+        {
+            uint16_t play_vec = rsid_play_entry;
+            printf("CIA1 timer $%04X -> %u Hz\r\n", timer_val, (unsigned)rsid_hz);
+            printf("$0316 -> $%04X  S=$%02X  first bytes: %02X %02X %02X %02X\r\n",
+                   (unsigned)play_vec, (unsigned)cpu.state.s,
+                   memory[play_vec], memory[play_vec+1],
+                   memory[play_vec+2], memory[play_vec+3]);
+        }
+
+        /* Idle loop at $E100 (deep in KERNAL stub area — tune cannot reach it).
+         * Using $0200 is unsafe: C64 music drivers routinely use $0200-$02FF
+         * as work RAM, so RTI returning to $0200 could land on a BRK ($00)
+         * that re-fires the play routine inside the same m6502_run budget. */
+        memory[0xE100] = 0x4C; memory[0xE101] = 0x00; memory[0xE102] = 0xE1;
+        cpu.state.pc = 0xE100;
+        cpu.state.p &= ~0x04u;  /* I=0: matches real C64 (KERNAL did CLI) */
+
+        const uint64_t frame_us        = 1000000ULL / rsid_hz;
+        uint64_t       next_frame      = time_us_64() + frame_us;
+        zusize         cycles_per_frame = (zusize)(cpu_hz_val / rsid_hz);
+
+        current_cpu     = &cpu;
+        rsid_irq_active = true;
+
+        uint64_t dbg_t0  = time_us_64();
+        uint32_t dbg_n   = 0;
+        dbg_sid_writes   = 0;
+
+        for (;;) {
+            /* Per-frame setup: restore original bytes at play entry (undoes any
+             * redirect patch from the previous frame) and reset the write counter. */
+            rsid_frame_s      = cpu.state.s;
+            rsid_frame_writes = 0;
+            if (rsid_play_entry) {
+                memory[rsid_play_entry]     = rsid_play_orig[0];
+                memory[rsid_play_entry + 1] = rsid_play_orig[1];
+                memory[rsid_play_entry + 2] = rsid_play_orig[2];
+            }
+
+            /* Manually inject the hardware interrupt sequence: push PCH, PCL,
+             * P (with B=0) then set I=1 and dispatch via the $FF48 trampoline.
+             * The play routine ends with RTI which pops this frame and returns
+             * to the idle loop at $E100 for the remainder of the budget.
+             * If the tune loops via direct JMP back to its entry, cpu_read patches
+             * JMP $E100 there on second entry; we then restore S so the leaked
+             * interrupt frame bytes don't accumulate on the stack. */
+            memory[0x0100 + cpu.state.s] = 0xE1;                /* PCH of $E100 */
+            cpu.state.s--;
+            memory[0x0100 + cpu.state.s] = 0x00;                /* PCL of $E100 */
+            cpu.state.s--;
+            memory[0x0100 + cpu.state.s] = cpu.state.p & ~0x10u; /* P with B=0 */
+            cpu.state.s--;
+            cpu.state.p |= 0x04u;   /* I=1 during handler */
+            cpu.state.pc  = 0xFF48; /* JMP ($0316) trampoline */
+
+            m6502_run(&cpu, cycles_per_frame);
+
+            /* Restore stack pointer and I flag regardless of whether the routine
+             * exited via RTI (normal) or was redirected to $E100 (looping tune). */
+            cpu.state.s  = rsid_frame_s;
+            cpu.state.p &= ~0x04u;  /* I=0 for next frame */
+
+            if (++dbg_n == 50) {
+                uint32_t dt = (uint32_t)(time_us_64() - dbg_t0);
+                printf("50 frames: %u us (%u Hz)  SID/frame: %u\r\n",
+                       dt, 50000000u / dt, dbg_sid_writes / 50);
+                dbg_t0         = time_us_64();
+                dbg_n          = 0;
+                dbg_sid_writes = 0;
+            }
+
+            if (btn_check()) break;
+            while (time_us_64() < next_frame)
+                ;
+            next_frame += frame_us;
+        }
+        rsid_irq_active = false;
+        current_cpu     = NULL;
     }
 
     /* Silence SID chip before next tune */
     for (uint8_t r = 0; r < 0x19; r++)
         sid_write(r, 0x00);
     sleep_ms(300);
-
     return true;
 }
 

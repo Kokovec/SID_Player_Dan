@@ -12,7 +12,6 @@
  * RES and BL are wired directly to 3.3V — no GPIOs needed for them. */
 #define TFT_SCK  26
 #define TFT_SDA  27
-#define TFT_CS   21
 #define TFT_DC   28
 #define TFT_SPI  spi1
 
@@ -40,20 +39,15 @@
 #define ST7735_GMCTRP1 0xE0
 #define ST7735_GMCTRN1 0xE1
 
-static inline void cs_lo(void) { gpio_put(TFT_CS, 0); }
-static inline void cs_hi(void) { gpio_put(TFT_CS, 1); }
-
-/* Send a command byte followed by optional data bytes, CS held low throughout */
+/* Send a command byte followed by optional data bytes */
 static void send_cmd(uint8_t cmd, const uint8_t *data, size_t len)
 {
-    cs_lo();
     gpio_put(TFT_DC, 0);
     spi_write_blocking(TFT_SPI, &cmd, 1);
     if (len) {
         gpio_put(TFT_DC, 1);
         spi_write_blocking(TFT_SPI, data, len);
     }
-    cs_hi();
 }
 
 static void set_addr_window(int x0, int y0, int x1, int y1)
@@ -113,7 +107,6 @@ void tft_init(void)
     gpio_set_function(TFT_SCK, GPIO_FUNC_SPI);
     gpio_set_function(TFT_SDA, GPIO_FUNC_SPI);
 
-    gpio_init(TFT_CS); gpio_set_dir(TFT_CS, GPIO_OUT); gpio_put(TFT_CS, 1);
     gpio_init(TFT_DC); gpio_set_dir(TFT_DC, GPIO_OUT); gpio_put(TFT_DC, 1);
 
     hw_init();
@@ -130,11 +123,9 @@ void tft_fill_rect(int x, int y, int w, int h, uint16_t color)
     uint8_t row[TFT_W * 2];
     for (int i = 0; i < w; i++) { row[i*2] = hi; row[i*2+1] = lo; }
 
-    cs_lo();
     gpio_put(TFT_DC, 1);
     for (int i = 0; i < h; i++)
         spi_write_blocking(TFT_SPI, row, (size_t)(w * 2));
-    cs_hi();
 }
 
 void tft_fill(uint16_t color)
@@ -269,10 +260,8 @@ static void draw_char(int x, int y, char c, uint16_t fg, uint16_t bg, uint8_t sc
     }
 
     set_addr_window(x, y, x + cw - 1, y + ch - 1);
-    cs_lo();
     gpio_put(TFT_DC, 1);
     spi_write_blocking(TFT_SPI, buf, (size_t)idx);
-    cs_hi();
 
     /* 1-pixel gap column (scaled) between characters, filled with background */
     tft_fill_rect(x + cw, y, scale, ch, bg);
@@ -329,7 +318,6 @@ static int jpeg_out(JDEC *jd, void *bitmap, JRECT *rect)
     int h  = y1c - y0 + 1;
 
     set_addr_window(x0, y0, x1c, y1c);
-    cs_lo();
     gpio_put(TFT_DC, 1);
 
     uint8_t buf[16 * 16 * 2];        /* fits the largest possible MCU tile */
@@ -342,7 +330,6 @@ static int jpeg_out(JDEC *jd, void *bitmap, JRECT *rect)
         }
     }
     spi_write_blocking(TFT_SPI, buf, (size_t)idx);
-    cs_hi();
     return 1; /* continue decoding */
 }
 
