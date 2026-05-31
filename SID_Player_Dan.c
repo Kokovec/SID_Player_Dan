@@ -303,10 +303,12 @@ static bool send_sid_meta(const char *path)
 }
 
 /* Load a SID file from the SD card, run INIT, then call PLAY at the
- * correct rate until CMD_NEXT is received.
+ * correct rate until CMD_NEXT, CMD_PREV, or CMD_STOP is received.
+ * Returns the command that stopped playback (CMD_NEXT/PREV/STOP),
+ * or 0 if the file could not be loaded.
  * PSID (play_addr != 0): direct polling.
  * RSID (play_addr == 0): CIA1 timer A drives IRQ-based playback. */
-static bool play_sid_file(const char *path)
+static uint8_t play_sid_file(const char *path)
 {
     FIL    fil;
     UINT   br;
@@ -315,7 +317,7 @@ static bool play_sid_file(const char *path)
     fr = f_open(&fil, path, FA_READ);
     if (fr != FR_OK) {
         printf("Cannot open %s (%d)\r\n", path, fr);
-        return false;
+        return 0;
     }
 
     /* Read header — v2 is 0x7C bytes; v1 is 0x76.  Read the larger size;
@@ -325,14 +327,14 @@ static bool play_sid_file(const char *path)
     if (fr != FR_OK || br < 0x76) {
         printf("Header read failed\r\n");
         f_close(&fil);
-        return false;
+        return 0;
     }
 
     const SIDHeader *h = (const SIDHeader *)hdr;
     if (memcmp(h->magic, "PSID", 4) != 0 && memcmp(h->magic, "RSID", 4) != 0) {
         printf("Not a SID file: %.4s\r\n", h->magic);
         f_close(&fil);
-        return false;
+        return 0;
     }
 
     uint16_t version     = be16(h->version);
@@ -410,13 +412,13 @@ static bool play_sid_file(const char *path)
 
     /* Seek to binary data, resolve embedded load address if needed */
     fr = f_lseek(&fil, data_offset);
-    if (fr != FR_OK) { f_close(&fil); return false; }
+    if (fr != FR_OK) { f_close(&fil); return 0; }
 
     if (load_addr == 0) {
         uint8_t ab[2];
         if (f_read(&fil, ab, 2, &br) != FR_OK || br < 2) {
             f_close(&fil);
-            return false;
+            return 0;
         }
         load_addr = ab[0] | ((uint16_t)ab[1] << 8);
     }
@@ -430,7 +432,7 @@ static bool play_sid_file(const char *path)
     uint32_t space = 0x10000u - load_addr;
     fr = f_read(&fil, &memory[load_addr], space, &br);
     f_close(&fil);
-    if (fr != FR_OK) { printf("Data read failed\r\n"); return false; }
+    if (fr != FR_OK) { printf("Data read failed\r\n"); return 0; }
     printf("Loaded  : %u bytes\r\n", (unsigned)br);
 
     /* Initialise 6502 and call INIT */
@@ -439,6 +441,8 @@ static bool play_sid_file(const char *path)
     cpu.write = cpu_write;
     m6502_power(&cpu, TRUE);
     call_routine(&cpu, init_addr, song_idx, 0, 0);
+
+    uint8_t stop_cmd = 0;
 
     if (play_addr != 0) {
         /* PSID: poll the play routine at the declared rate */
@@ -455,7 +459,9 @@ static bool play_sid_file(const char *path)
                 dbg_t0 = time_us_64(); dbg_n = 0;
                 dbg_sid_writes = 0;
             }
-            if (poll_cmd() == CMD_NEXT) break;
+            stop_cmd = poll_cmd();
+            if (stop_cmd == CMD_NEXT || stop_cmd == CMD_PREV || stop_cmd == CMD_STOP)
+                break;
             while (time_us_64() < next_frame)
                 ;
             next_frame += frame_us;
@@ -569,7 +575,9 @@ static bool play_sid_file(const char *path)
                 dbg_sid_writes = 0;
             }
 
-            if (poll_cmd() == CMD_NEXT) break;
+            stop_cmd = poll_cmd();
+            if (stop_cmd == CMD_NEXT || stop_cmd == CMD_PREV || stop_cmd == CMD_STOP)
+                break;
             while (time_us_64() < next_frame)
                 ;
             next_frame += frame_us;
@@ -582,7 +590,7 @@ static bool play_sid_file(const char *path)
     for (uint8_t r = 0; r < 0x19; r++)
         sid_write(r, 0x00);
     sleep_ms(300);
-    return true;
+    return stop_cmd;
 }
 
 /* Count .sid files in the root of drive */
@@ -648,16 +656,18 @@ int main(void)
         }
         send_sid_meta(path);
 
-        /* Wait for CMD_PLAY or CMD_NEXT */
+        /* Wait for an actionable command */
         uint8_t cmd = 0;
-        while (cmd != CMD_PLAY && cmd != CMD_NEXT)
-            cmd = poll_cmd();
+        while (cmd != CMD_PLAY && cmd != CMD_NEXT && cmd != CMD_PREV)
+            cmd = poll_cmd();  /* CMD_STOP while idle is a no-op; keep waiting */
 
         if (cmd == CMD_PLAY)
-            play_sid_file(path);  /* returns when CMD_NEXT received during play */
+            cmd = play_sid_file(path);  /* returns CMD that stopped it, or 0 on error */
 
-        /* Advance to the next song (handles both CMD_NEXT-while-waiting
-         * and CMD_NEXT-during-playback) */
-        idx = (uint16_t)((idx + 1) % total);
+        if (cmd == CMD_NEXT)
+            idx = (uint16_t)((idx + 1) % total);
+        else if (cmd == CMD_PREV)
+            idx = (idx > 0) ? (uint16_t)(idx - 1) : (uint16_t)(total - 1);
+        /* CMD_STOP or 0: idx unchanged → loop restarts, re-sends meta, waits again */
     }
 }

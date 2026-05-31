@@ -22,7 +22,9 @@
 
 // Commands (single-byte payload in a CMD packet)
 #define CMD_PLAY        0x01    // play current song
-#define CMD_NEXT        0x02    // advance to next song, play it
+#define CMD_NEXT        0x02    // advance to next song, send metadata, wait
+#define CMD_PREV        0x04    // go to previous song, send metadata, wait
+#define CMD_STOP        0x05    // stop playback, stay on current song, wait
 
 // -----------------------------------------------------------------------
 // Metadata payload  (Player → Display)
