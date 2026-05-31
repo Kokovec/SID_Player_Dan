@@ -31,6 +31,7 @@
 // Sent on boot and after every song change.
 // All strings are null-terminated, fixed-width.
 // -----------------------------------------------------------------------
+#define SID_FILENAME_LEN    32
 #define SID_TITLE_LEN       32
 #define SID_AUTHOR_LEN      32
 #define SID_RELEASED_LEN    32
@@ -38,9 +39,10 @@
 typedef struct __attribute__((packed)) {
     uint8_t song_num;                   // current song (1-based)
     uint8_t song_count;                 // total songs in the SID file
-    char    title   [SID_TITLE_LEN];
-    char    author  [SID_AUTHOR_LEN];
-    char    released[SID_RELEASED_LEN];
+    char    filename [SID_FILENAME_LEN];
+    char    title    [SID_TITLE_LEN];
+    char    author   [SID_AUTHOR_LEN];
+    char    released [SID_RELEASED_LEN];
 } SidMeta;
 
 // -----------------------------------------------------------------------

@@ -295,9 +295,16 @@ static bool send_sid_meta(const char *path)
     SidMeta meta = {0};
     meta.song_num   = (uint8_t)be16(h->start_song);
     meta.song_count = (uint8_t)be16(h->songs);
-    memcpy(meta.title,  h->title,    SID_TITLE_LEN - 1);
-    memcpy(meta.author, h->author,   SID_AUTHOR_LEN - 1);
+    memcpy(meta.title,    h->title,    SID_TITLE_LEN - 1);
+    memcpy(meta.author,   h->author,   SID_AUTHOR_LEN - 1);
     memcpy(meta.released, h->released, SID_RELEASED_LEN - 1);
+
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    strncpy(meta.filename, base, SID_FILENAME_LEN - 1);
+    char *dot = strrchr(meta.filename, '.');
+    if (dot) *dot = '\0';
+
     send_meta(&meta);
     return true;
 }
