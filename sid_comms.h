@@ -31,7 +31,7 @@
 // -----------------------------------------------------------------------
 #define SID_TITLE_LEN       32
 #define SID_AUTHOR_LEN      32
-#define SID_RELEASED_LEN    16
+#define SID_RELEASED_LEN    32
 
 typedef struct __attribute__((packed)) {
     uint8_t song_num;                   // current song (1-based)
