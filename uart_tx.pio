@@ -1,0 +1,39 @@
+;
+; Copyright (c) 2020 Raspberry Pi (Trading) Ltd.
+; SPDX-License-Identifier: BSD-3-Clause
+;
+; 8N1 UART TX — 1 start bit, 8 data bits, 1 stop bit, no parity.
+; OUT pin 0 and side-set pin 0 are both mapped to UART TX pin.
+
+.program uart_tx
+.side_set 1 opt
+
+    pull       side 1 [7]  ; Assert stop bit, or stall with line in idle state
+    set x, 7   side 0 [7]  ; Preload bit counter, assert start bit for 8 clocks
+bitloop:
+    out pins, 1             ; Shift 1 bit from OSR to the first OUT pin
+    jmp x-- bitloop   [6]  ; Each iteration is 8 cycles
+
+% c-sdk {
+#include "hardware/clocks.h"
+
+static inline void uart_tx_program_init(PIO pio, uint sm, uint offset, uint pin, uint baud) {
+    pio_sm_set_pins_with_mask(pio, sm, 1u << pin, 1u << pin);
+    pio_sm_set_pindirs_with_mask(pio, sm, 1u << pin, 1u << pin);
+    pio_gpio_init(pio, pin);
+
+    pio_sm_config c = uart_tx_program_get_default_config(offset);
+    sm_config_set_out_shift(&c, true, false, 32);
+    sm_config_set_out_pins(&c, pin, 1);
+    sm_config_set_sideset_pins(&c, pin);
+    sm_config_set_clkdiv(&c, (float)clock_get_hz(clk_sys) / (8.0f * baud));
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+static inline void uart_tx_program_putc(PIO pio, uint sm, char c) {
+    pio_sm_put_blocking(pio, sm, (uint32_t)(uint8_t)c);
+}
+
+%}

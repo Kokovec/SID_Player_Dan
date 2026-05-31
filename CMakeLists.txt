@@ -56,10 +56,6 @@ endif()
 
 FetchContent_MakeAvailable(FatFs_SPI)
 
-# TJpgDec — tiny baseline JPEG decoder by ChaN (public domain), local copy
-add_library(tjpgd STATIC ${LIB_DIR}/tjpgd/tjpgd.c)
-target_include_directories(tjpgd PUBLIC ${LIB_DIR}/tjpgd)
-
 # 6502 CPU emulator static library
 add_library(m6502_cpu STATIC
     ${LIB_DIR}/m6502/sources/6502.c
@@ -76,8 +72,10 @@ target_compile_definitions(m6502_cpu PUBLIC
 add_executable(SID_Player_Dan
     SID_Player_Dan.c
     hw_config.c
-    tft.c
 )
+
+pico_generate_pio_header(SID_Player_Dan ${CMAKE_CURRENT_LIST_DIR}/uart_tx.pio)
+pico_generate_pio_header(SID_Player_Dan ${CMAKE_CURRENT_LIST_DIR}/uart_rx.pio)
 
 pico_set_program_name(SID_Player_Dan "SID_Player_Dan")
 pico_set_program_version(SID_Player_Dan "0.1")
@@ -90,10 +88,9 @@ pico_enable_stdio_usb(SID_Player_Dan 1)
 target_link_libraries(SID_Player_Dan
         pico_stdlib
         hardware_pwm
-        hardware_spi
+        hardware_pio
         m6502_cpu
-        FatFs_SPI
-        tjpgd)
+        FatFs_SPI)
 
 # Add the standard include files to the build
 target_include_directories(SID_Player_Dan PRIVATE

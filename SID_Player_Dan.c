@@ -2,11 +2,14 @@
 #include <string.h>
 #include "pico/stdlib.h"
 #include "hardware/pwm.h"
+#include "hardware/pio.h"
 #include "emulation/CPU/6502.h"
 #include "ff.h"
 #include "f_util.h"
 #include "hw_config.h"
-#include "tft.h"
+#include "sid_comms.h"
+#include "uart_tx.pio.h"
+#include "uart_rx.pio.h"
 
 /* SID file header — all multi-byte fields are big-endian */
 typedef struct __attribute__((packed)) {
@@ -99,27 +102,62 @@ static void sid_set_clock(bool ntsc)
 }
 
 /* ------------------------------------------------------------------ */
-/* Next-track button — GP22, active low, internal pull-up             */
+/* PIO UART — GP21 TX, GP22 RX at 115200 baud                        */
 
-#define BTN_GPIO 22
+#define PIO_UART_TX_PIN  21
+#define PIO_UART_RX_PIN  22
 
-static void btn_init(void)
+static PIO  pio_uart  = pio0;
+static uint pio_tx_sm = 0;
+static uint pio_rx_sm = 1;
+
+static void pio_uart_init(void)
 {
-    gpio_init(BTN_GPIO);
-    gpio_set_dir(BTN_GPIO, GPIO_IN);
-    gpio_pull_up(BTN_GPIO);
+    uint tx_off = pio_add_program(pio_uart, &uart_tx_program);
+    uint rx_off = pio_add_program(pio_uart, &uart_rx_program);
+    uart_tx_program_init(pio_uart, pio_tx_sm, tx_off, PIO_UART_TX_PIN, SID_BAUD_RATE);
+    uart_rx_program_init(pio_uart, pio_rx_sm, rx_off, PIO_UART_RX_PIN, SID_BAUD_RATE);
 }
 
-/* Returns true once when a clean press+release is detected.
- * Debounces by requiring the line to stay low for 20 ms, then waits
- * for release before returning so callers never see the same press twice. */
-static bool btn_check(void)
+static void send_meta(const SidMeta *m)
 {
-    if (gpio_get(BTN_GPIO)) return false;   /* not pressed */
-    sleep_ms(20);                            /* debounce    */
-    if (gpio_get(BTN_GPIO)) return false;   /* was a bounce */
-    while (!gpio_get(BTN_GPIO)) tight_loop_contents();  /* wait for release */
-    return true;
+    uint8_t len = sizeof(SidMeta);
+    uint8_t chk = PKT_TYPE_META ^ len;
+    const uint8_t *p = (const uint8_t *)m;
+    for (uint8_t i = 0; i < len; i++) chk ^= p[i];
+
+    uart_tx_program_putc(pio_uart, pio_tx_sm, PKT_HDR0);
+    uart_tx_program_putc(pio_uart, pio_tx_sm, PKT_HDR1);
+    uart_tx_program_putc(pio_uart, pio_tx_sm, PKT_TYPE_META);
+    uart_tx_program_putc(pio_uart, pio_tx_sm, len);
+    for (uint8_t i = 0; i < len; i++)
+        uart_tx_program_putc(pio_uart, pio_tx_sm, p[i]);
+    uart_tx_program_putc(pio_uart, pio_tx_sm, chk);
+}
+
+/* Returns the CMD_* payload byte when a valid command packet arrives,
+ * or 0 if the RX FIFO has no complete packet yet. */
+static uint8_t poll_cmd(void)
+{
+    typedef enum { H0, H1, TP, LN, PL, CK } State;
+    static State   state   = H0;
+    static uint8_t type, len, chk, payload;
+
+    while (!pio_sm_is_rx_fifo_empty(pio_uart, pio_rx_sm)) {
+        uint8_t b = (uint8_t)uart_rx_program_getc(pio_uart, pio_rx_sm);
+        switch (state) {
+            case H0: if (b == PKT_HDR0) state = H1; break;
+            case H1: state = (b == PKT_HDR1) ? TP : H0; break;
+            case TP: type = b; chk = b; state = LN; break;
+            case LN: len = b; chk ^= b; state = (len == 1) ? PL : H0; break;
+            case PL: payload = b; chk ^= b; state = CK; break;
+            case CK:
+                state = H0;
+                if (b == chk && type == PKT_TYPE_CMD) return payload;
+                break;
+        }
+    }
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -240,8 +278,32 @@ static bool is_sid_file(const char *name)
     return false;
 }
 
+/* Read a SID file's header, populate SidMeta, and send it to the Display Pico.
+ * Returns false if the file cannot be opened or is not a valid SID. */
+static bool send_sid_meta(const char *path)
+{
+    FIL fil; UINT br;
+    if (f_open(&fil, path, FA_READ) != FR_OK) return false;
+    uint8_t hdr[0x7C];
+    bool ok = (f_read(&fil, hdr, sizeof(hdr), &br) == FR_OK && br >= 0x76);
+    f_close(&fil);
+    if (!ok) return false;
+    const SIDHeader *h = (const SIDHeader *)hdr;
+    if (memcmp(h->magic, "PSID", 4) != 0 && memcmp(h->magic, "RSID", 4) != 0)
+        return false;
+
+    SidMeta meta = {0};
+    meta.song_num   = (uint8_t)be16(h->start_song);
+    meta.song_count = (uint8_t)be16(h->songs);
+    memcpy(meta.title,  h->title,    SID_TITLE_LEN - 1);
+    memcpy(meta.author, h->author,   SID_AUTHOR_LEN - 1);
+    memcpy(meta.released, h->released, SID_RELEASED_LEN - 1);
+    send_meta(&meta);
+    return true;
+}
+
 /* Load a SID file from the SD card, run INIT, then call PLAY at the
- * correct rate until the next-track button is pressed.
+ * correct rate until CMD_NEXT is received.
  * PSID (play_addr != 0): direct polling.
  * RSID (play_addr == 0): CIA1 timer A drives IRQ-based playback. */
 static bool play_sid_file(const char *path)
@@ -304,9 +366,6 @@ static bool play_sid_file(const char *path)
     printf("Clock   : %s   Play rate: %u Hz\r\n", ntsc ? "NTSC" : "PAL", (unsigned)play_hz);
 
     rsid_irq_active = false;
-
-    tft_show_track(path, title, author, released,
-                   be16(h->songs), start_song, ntsc, play_hz);
 
     /* Set phi2 clock for this tune's region */
     sid_set_clock(ntsc);
@@ -396,7 +455,7 @@ static bool play_sid_file(const char *path)
                 dbg_t0 = time_us_64(); dbg_n = 0;
                 dbg_sid_writes = 0;
             }
-            if (btn_check()) break;
+            if (poll_cmd() == CMD_NEXT) break;
             while (time_us_64() < next_frame)
                 ;
             next_frame += frame_us;
@@ -510,7 +569,7 @@ static bool play_sid_file(const char *path)
                 dbg_sid_writes = 0;
             }
 
-            if (btn_check()) break;
+            if (poll_cmd() == CMD_NEXT) break;
             while (time_us_64() < next_frame)
                 ;
             next_frame += frame_us;
@@ -561,9 +620,8 @@ static bool get_sid_path(const char *drive, uint16_t idx,
 int main(void)
 {
     stdio_init_all();
-    tft_init();
+    pio_uart_init();
     sid_init();
-    btn_init();
 
     sd_card_t *sd = sd_get_by_num(0);
     FRESULT fr = f_mount(&sd->fatfs, sd->pcName, 1);
@@ -580,10 +638,26 @@ int main(void)
     printf("%u .sid files found\r\n", total);
 
     uint16_t idx = 0;
+    char path[64];
+
     for (;;) {
-        char path[64];
-        if (get_sid_path(sd->pcName, idx, path, sizeof(path)))
-            play_sid_file(path);
+        /* Load metadata for current song and notify Display Pico */
+        if (!get_sid_path(sd->pcName, idx, path, sizeof(path))) {
+            idx = (uint16_t)((idx + 1) % total);
+            continue;
+        }
+        send_sid_meta(path);
+
+        /* Wait for CMD_PLAY or CMD_NEXT */
+        uint8_t cmd = 0;
+        while (cmd != CMD_PLAY && cmd != CMD_NEXT)
+            cmd = poll_cmd();
+
+        if (cmd == CMD_PLAY)
+            play_sid_file(path);  /* returns when CMD_NEXT received during play */
+
+        /* Advance to the next song (handles both CMD_NEXT-while-waiting
+         * and CMD_NEXT-during-playback) */
         idx = (uint16_t)((idx + 1) % total);
     }
 }
