@@ -5,10 +5,10 @@
          SID D2 ── GP2  [ 4] [37] 3V3_EN <br>
          SID D3 ── GP3  [ 5] [36] 3V3(OUT) <br>
          SID D4 ── GP4  [ 6] [35] ADC_VREF <br>
-         SID D5 ── GP5  [ 7] [34] GP28 ── (TFT DC — removed) <br>
+         SID D5 ── GP5  [ 7] [34] GP28 ── Open <br>
                    GND  [ 8] [33] GND <br>
-         SID D6 ── GP6  [ 9] [32] GP27 ── (TFT SDA — removed) <br>
-         SID D7 ── GP7  [10] [31] GP26 ── (TFT SCK — removed) <br>
+         SID D6 ── GP6  [ 9] [32] GP27 ── Open <br>
+         SID D7 ── GP7  [10] [31] GP26 ── Open <br>
          SID A0 ── GP8  [11] [30] RUN <br>
          SID A1 ── GP9  [12] [29] GP22 ── PIO UART RX ← Display Pico TX <br>
                    GND  [13] [28] GND <br>
