@@ -1,3 +1,4 @@
+                    Pi Pico 2 Pinout
                     ┌─────────────────┐
          SID D0 ── GP0  [ 1] [40] VBUS ── 5V in
          SID D1 ── GP1  [ 2] [39] VSYS
