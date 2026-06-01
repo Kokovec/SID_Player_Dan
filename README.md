@@ -1,33 +1,25 @@
-| **Phys Pin** | **GPIO** | **Signal** | **Connects to** |
-| --- | --- | --- | --- |
-| 1 | GP0 | D0 | SID data bit 0 |
-| 2 | GP1 | D1 | SID data bit 1 |
-| 4 | GP2 | D2 | SID data bit 2 |
-| 5 | GP3 | D3 | SID data bit 3 |
-| 6 | GP4 | D4 | SID data bit 4 |
-| 7 | GP5 | D5 | SID data bit 5 |
-| 9 | GP6 | D6 | SID data bit 6 |
-| 10 | GP7 | D7 | SID data bit 7 |
-| 11 | GP8 | A0 | SID address bit 0 |
-| 12 | GP9 | A1 | SID address bit 1 |
-| 14 | GP10 | A2 | SID address bit 2 |
-| 15 | GP11 | A3 | SID address bit 3 |
-| 16 | GP12 | A4 | SID address bit 4 |
-| 17 | GP13 | ``/CS`` | SID chip select (active low) |
-| 20 | GP15 | ``/RES`` | SID reset (active low) |
-| 21 | GP16 | phi2 | SID clock ~985 kHz (PWM) |
-| 22 | GP17 | SD ``/CS`` | SD card chip select |
-| 24 | GP18 | SD SCK | SD card clock |
-| 25 | GP19 | SD MOSI | SD card data in |
-| 26 | GP20 | SD MISO | SD card data out |
-| 27 | GP21 | NOT USED | NOT USED |
-| 29 | GP22 | BTN | Next‑track button (active low) |
-| 31 | GP26 | TFT SCK | Display SPI clock |
-| 32 | GP27 | TFT SDA | Display SPI data |
-| 34 | GP28 | TFT DC | Display data/command select |
-| 3, 8, 13, 18, 23, 28, 33, 38 | GND | GND | Ground |
-| 36 | 3V3 | 3.3 V | Power, TFT RES, TFT BL |
-| 39 | VSYS | 5 V in | Main power input | <br><br>
+                    ┌─────────────────┐ <br>
+         SID D0 ── GP0  [ 1] [40] VBUS ── 5V in <br>
+         SID D1 ── GP1  [ 2] [39] VSYS <br>
+                   GND  [ 3] [38] GND <br>
+         SID D2 ── GP2  [ 4] [37] 3V3_EN <br>
+         SID D3 ── GP3  [ 5] [36] 3V3(OUT) <br>
+         SID D4 ── GP4  [ 6] [35] ADC_VREF <br>
+         SID D5 ── GP5  [ 7] [34] GP28 ── (TFT DC — removed) <br>
+                   GND  [ 8] [33] GND <br>
+         SID D6 ── GP6  [ 9] [32] GP27 ── (TFT SDA — removed) <br>
+         SID D7 ── GP7  [10] [31] GP26 ── (TFT SCK — removed) <br>
+         SID A0 ── GP8  [11] [30] RUN <br>
+         SID A1 ── GP9  [12] [29] GP22 ── PIO UART RX ← Display Pico TX <br>
+                   GND  [13] [28] GND <br>
+         SID A2 ── GP10 [14] [27] GP21 ── PIO UART TX → Display Pico RX <br>
+         SID A3 ── GP11 [15] [26] GP20 ── SD MISO (SPI0 RX) <br>
+         SID A4 ── GP12 [16] [25] GP19 ── SD MOSI (SPI0 TX) <br>
+        SID /CS ── GP13 [17] [24] GP18 ── SD SCK  (SPI0 SCK) <br>
+                   GND  [18] [23] GND <br>
+       SID /RES ── GP15 [20] [22] GP17 ── SD /CS  (SPI0 CSn) <br>
+      phi2 PWM  ── GP16 [21] [21] GP16 <br>
+                    └─────────────────┘ <br>
 
 | **SID Pin** | **Name** | **Description** |
 | --- | --- | --- |
