@@ -40,7 +40,7 @@ static inline uint32_t be32(uint32_t v) { return __builtin_bswap32(v); }
  * A0-A4  : GP8-GP12  address bus (5-bit)
  * /CS    : GP13
  * R/W    : tied to GND (write-only)
- * SK/OE  : GP14      SIDKick /OE (LOW=enabled)
+ * R/W    : GP14      HIGH=read, LOW=write
  * /RES   : GP15
  * phi2   : GP16      PWM ~0.985 MHz
  * LS_OE  : GP26      TXS0108E OE (HIGH=enabled)
@@ -48,7 +48,7 @@ static inline uint32_t be32(uint32_t v) { return __builtin_bswap32(v); }
 #define SID_D0     0
 #define SID_A0     8
 #define SID_CS_N  13
-#define SID_SK_OE 14
+#define SID_RW    14
 #define SID_RES_N 15
 #define SID_CLK   16
 #define SID_LS_OE 26
@@ -77,7 +77,7 @@ static void sid_init(void)
         gpio_set_dir(i, GPIO_OUT);
     }
     gpio_init(SID_CS_N);  gpio_set_dir(SID_CS_N,  GPIO_OUT); gpio_put(SID_CS_N,  1);
-    gpio_init(SID_SK_OE); gpio_set_dir(SID_SK_OE, GPIO_OUT); gpio_put(SID_SK_OE, 0); /* /OE LOW = enabled */
+    gpio_init(SID_RW);    gpio_set_dir(SID_RW,    GPIO_OUT); gpio_put(SID_RW,    0); /* LOW = write */
     gpio_init(SID_RES_N); gpio_set_dir(SID_RES_N, GPIO_OUT); gpio_put(SID_RES_N, 0);
     gpio_init(SID_LS_OE); gpio_set_dir(SID_LS_OE, GPIO_OUT); gpio_put(SID_LS_OE, 1); /* OE HIGH = enabled */
 

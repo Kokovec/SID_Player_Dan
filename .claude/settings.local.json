@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(grep \"RP2040\\\\|RP2350\\\\|PICO\\\\|pico2\" /c/Users/dansi/AppData/Local/Temp/MCUME/README.md | head -10)",
+      "Read(//c/Users/dansi/AppData/Local/Temp/MCUME/**)"
     ]
   }
 }
