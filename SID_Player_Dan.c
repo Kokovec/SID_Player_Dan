@@ -39,11 +39,10 @@ static inline uint32_t be32(uint32_t v) { return __builtin_bswap32(v); }
  * D0-D7  : GP0-GP7   data bus
  * A0-A4  : GP8-GP12  address bus (5-bit)
  * /CS    : GP13
- * R/W    : tied to GND (write-only)
  * R/W    : GP14      HIGH=read, LOW=write
  * /RES   : GP15
  * phi2   : GP16      PWM ~0.985 MHz
- * LS_OE  : GP26      TXS0108E OE (HIGH=enabled)
+ * LS_OE  : tied to 3.3V (always enabled)
  */
 #define SID_D0     0
 #define SID_A0     8
@@ -51,7 +50,6 @@ static inline uint32_t be32(uint32_t v) { return __builtin_bswap32(v); }
 #define SID_RW    14
 #define SID_RES_N 15
 #define SID_CLK   16
-#define SID_LS_OE 26
 
 #define SID_DATA_MASK  0x000000FFu   /* GP0-GP7  */
 #define SID_ADDR_MASK  0x00001F00u   /* GP8-GP12 */
@@ -64,6 +62,80 @@ static void sid_write(uint8_t reg, uint8_t val)
     gpio_put(SID_CS_N, 0);
     busy_wait_us_32(2);   /* hold >= 1 phi2 period (~1.015 us) */
     gpio_put(SID_CS_N, 1);
+}
+
+/* Read a SID register.  Only $19-$1C are defined as readable by the datasheet.
+ * gpio_get() on a PWM-configured pin is unreliable, so we sync to phi2 by
+ * reading the PWM slice counter directly.  With wrap=1 and level=1 the counter
+ * is 0 during phi2 HIGH and 1 during phi2 LOW. */
+static uint8_t sid_read(uint8_t reg)
+{
+    gpio_put_masked(SID_ADDR_MASK, (uint32_t)(reg & 0x1F) << 8);
+    gpio_put(SID_RW, 1);
+    gpio_put_masked(SID_DATA_MASK, SID_DATA_MASK); /* drive all HIGH so SIDKick can pull bits LOW through TXB0108 */
+    gpio_set_dir_in_masked(SID_DATA_MASK);
+
+    uint slice = pwm_gpio_to_slice_num(SID_CLK);
+
+    /* Exactly one C64 bus cycle: CS stable during phi2 LOW (so it is latched
+     * cleanly at the rising edge), held through exactly ONE phi2 HIGH, then
+     * released during the next LOW.  Spanning multiple HIGHs would make the
+     * SIDKick advance stateConfigRegisterAccess more than once per read and
+     * desync sequential $D41D reads. */
+    while (pwm_get_counter(slice) != 0) tight_loop_contents(); /* wait for HIGH */
+    while (pwm_get_counter(slice) == 0) tight_loop_contents(); /* wait for LOW  */
+    gpio_put(SID_CS_N, 0);                                     /* CS low, stable before the rising edge */
+    while (pwm_get_counter(slice) != 0) tight_loop_contents(); /* phi2 rises — SIDKick drives the bus    */
+
+    /* Settle ~330 ns into the ~507 ns HIGH phase before sampling. */
+    __asm volatile (
+        "nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\n"
+        "nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\n"
+        "nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\n"
+        "nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\n"
+        "nop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\nnop\n"
+    );
+    uint8_t val = (uint8_t)(gpio_get_all() & SID_DATA_MASK);
+
+    while (pwm_get_counter(slice) == 0) tight_loop_contents(); /* wait for phi2 LOW     */
+    gpio_put(SID_CS_N, 1);                                     /* release CS during LOW */
+
+    gpio_put(SID_RW, 0);
+    gpio_set_dir_out_masked(SID_DATA_MASK);
+    return val;
+}
+
+/* Single C64 bus-cycle write — CS stable during phi2 LOW, held through exactly
+ * one phi2 HIGH, released during the next LOW.  Used for SIDKick config-register
+ * writes, which auto-increment the access pointer once per bus cycle.  Only
+ * reliable at the slow config clock (see sidkick_set_config_clock): at full phi2
+ * speed a single HIGH (~507 ns) is too short for the SIDKick to register. */
+static void sid_write_1cycle(uint8_t reg, uint8_t val)
+{
+    gpio_set_dir_out_masked(SID_DATA_MASK);
+    gpio_put(SID_RW, 0);
+    gpio_put_masked(SID_BUS_MASK, (uint32_t)val | ((uint32_t)(reg & 0x1F) << 8));
+
+    uint slice = pwm_gpio_to_slice_num(SID_CLK);
+    while (pwm_get_counter(slice) != 0) tight_loop_contents(); /* wait for HIGH */
+    while (pwm_get_counter(slice) == 0) tight_loop_contents(); /* wait for LOW  */
+    gpio_put(SID_CS_N, 0);                                     /* CS low, stable before rising edge */
+    while (pwm_get_counter(slice) != 0) tight_loop_contents(); /* phi2 HIGH — SIDKick latches write  */
+    while (pwm_get_counter(slice) == 0) tight_loop_contents(); /* wait for LOW  */
+    gpio_put(SID_CS_N, 1);                                     /* release CS during LOW */
+}
+
+/* Temporarily run phi2 much slower (~294 kHz) so a single-cycle config access
+ * keeps CS low long enough (~3.4 µs) to be reliably registered by the SIDKick,
+ * while still crossing exactly one phi2 rising edge (pointer advances by 1).
+ * Pass slow=false to restore the normal PAL clock. */
+static void sidkick_set_config_clock(bool slow)
+{
+    uint slice = pwm_gpio_to_slice_num(SID_CLK);
+    if (slow)
+        pwm_set_clkdiv_int_frac(slice, 255, 0); /* 150 MHz / (255 * 2) = 294 kHz */
+    else
+        pwm_set_clkdiv_int_frac(slice, 76, 2);  /* PAL default */
 }
 
 static void sid_init(void)
@@ -79,8 +151,6 @@ static void sid_init(void)
     gpio_init(SID_CS_N);  gpio_set_dir(SID_CS_N,  GPIO_OUT); gpio_put(SID_CS_N,  1);
     gpio_init(SID_RW);    gpio_set_dir(SID_RW,    GPIO_OUT); gpio_put(SID_RW,    0); /* LOW = write */
     gpio_init(SID_RES_N); gpio_set_dir(SID_RES_N, GPIO_OUT); gpio_put(SID_RES_N, 0);
-    gpio_init(SID_LS_OE); gpio_set_dir(SID_LS_OE, GPIO_OUT); gpio_put(SID_LS_OE, 1); /* OE HIGH = enabled */
-
     /* phi2 clock on GP16 via PWM — default PAL: 150 MHz / (76.125 * 2) = 985 424 Hz */
     gpio_set_function(SID_CLK, GPIO_FUNC_PWM);
     uint slice = pwm_gpio_to_slice_num(SID_CLK);
@@ -93,6 +163,12 @@ static void sid_init(void)
     sleep_ms(200);
     gpio_put(SID_RES_N, 1);
     sleep_ms(3000); /* wait for SID chip startup to complete */
+
+    /* Start Voice 3 noise LFSR running from the beginning so $D41B is
+     * non-deterministic by the time the user stops a tune. */
+    sid_write(0x0E, 0xFF);
+    sid_write(0x0F, 0xFF);
+    sid_write(0x12, 0x80);
 }
 
 /* Adjust phi2 clock divider for PAL or NTSC.
@@ -599,6 +675,15 @@ static uint8_t play_sid_file(const char *path)
         current_cpu     = NULL;
     }
 
+    if (stop_cmd == CMD_STOP) {
+        /* LFSR has been running since sid_init(); read before silencing.
+         * Slow phi2 so the single-cycle read is held long enough to register. */
+        sidkick_set_config_clock(true);
+        uint8_t rand_val = sid_read(0x1B);
+        sidkick_set_config_clock(false);
+        printf("Random ($D41B) = 0x%02X (%u)\r\n", rand_val, rand_val);
+    }
+
     /* Silence SID chip before next tune */
     for (uint8_t r = 0; r < 0x19; r++)
         sid_write(r, 0x00);
@@ -638,11 +723,62 @@ static bool get_sid_path(const char *drive, uint16_t idx,
     return found;
 }
 
+static void sidkick_print_config(void)
+{
+    uint8_t cfg[64];
+
+    /* Slow phi2 right down so each single-cycle bus access is held long enough
+     * to be registered, while advancing the config pointer by exactly 1. */
+    sidkick_set_config_clock(true);
+    busy_wait_us_32(5000);          /* let the new (slower) phi2 settle — the first
+                                       access after a clkdiv change otherwise sees a
+                                       malformed period and double-steps the pointer */
+
+    /* Enter config mode.  A couple of throwaway $D41D reads absorb any residual
+     * first-access timing glitch before we reset the pointer for the real read. */
+    sid_write_1cycle(0x1F, 0xFF);   /* enter config mode               */
+    (void)sid_read(0x1D);
+    (void)sid_read(0x1D);
+
+    sid_write_1cycle(0x1E, 0x00);   /* stateConfigRegisterAccess = 0   */
+
+    for (int i = 0; i < 64; i++)
+        cfg[i] = sid_read(0x1D);    /* each read returns config[i], auto-increments */
+
+    sidkick_set_config_clock(false);  /* restore normal phi2 */
+
+    printf("Raw config bytes:\r\n");
+    for (int i = 0; i < 64; i++)
+        printf("[%02d]=0x%02X%s", i, cfg[i], (i % 8 == 7) ? "\r\n" : " ");
+
+    static const char * const sid_type[] = {
+        "6581", "8580", "8580+digiboost", "disabled"
+    };
+
+    printf("\r\n--- SIDKick Configuration ---\r\n");
+    printf("SID1 type        : %u (%s)\r\n",  cfg[0],  cfg[0]  <= 3 ? sid_type[cfg[0]]  : "?");
+    printf("SID1 digiboost   : %u\r\n",        cfg[1]);
+    printf("SID1 volume      : %u\r\n",        cfg[3]);
+    printf("Register reads   : %u (%s)\r\n",  cfg[2],  cfg[2]  ? "enabled" : "disabled");
+    printf("SID2 type        : %u (%s)\r\n",  cfg[8],  cfg[8]  <= 3 ? sid_type[cfg[8]]  : "?");
+    printf("SID2 digiboost   : %u\r\n",        cfg[9]);
+    printf("SID2 address idx : %u\r\n",        cfg[10]);
+    printf("SID2 volume      : %u\r\n",        cfg[11]);
+    printf("SID panning      : %u\r\n",        cfg[12]);
+    printf("SID balance      : %u (7=centre)\r\n", cfg[58]);
+    printf("Clock speed      : %u (%s)\r\n",  cfg[59], cfg[59] == 0 ? "PAL" : "NTSC");
+    printf("Digi detect      : %u (%s)\r\n",  cfg[61], cfg[61] ? "on" : "off");
+    printf("Pot filter       : %u\r\n",        cfg[60]);
+    printf("Paddle offset    : %u\r\n",        cfg[39]);
+    printf("-----------------------------\r\n\r\n");
+}
+
 int main(void)
 {
     stdio_init_all();
     pio_uart_init();
     sid_init();
+    sidkick_print_config();
 
     sd_card_t *sd = sd_get_by_num(0);
     FRESULT fr = f_mount(&sd->fatfs, sd->pcName, 1);
