@@ -754,44 +754,28 @@ static bool get_sid_path(const char *drive, uint16_t idx,
     return found;
 }
 
-/* Read all 64 SIDKick config bytes.  Self-contained.
- *
- * The first config session after boot often doesn't engage — $D41D then returns
- * the 0x4C launch stub (or floating 0xFF, or all 0x00).  So run the read session
- * and validate the result; if it's clearly garbage, run it again.  A valid read
- * has cfg[0] = a real SID type (0-3) and is not a single repeated byte (which is
- * what every failure mode looks like: all 0x4C/0xFF/0x00). */
+/* Read all 64 SIDKick config bytes into cfg[] over the PIO config bus. */
 static void sidkick_read_config(uint8_t cfg[64])
 {
-    for (int attempt = 0; attempt < 8; attempt++) {
-        sidkick_config_begin();
+    sidkick_config_begin();
 
-        cfg_write(0x1F, 0xFF);          /* enter config mode             */
-        (void)cfg_read(0x1D);           /* 2 throwaway reads absorb the 0x4C stub */
-        (void)cfg_read(0x1D);
-        cfg_write(0x1E, 0x00);          /* stateConfigRegisterAccess = 0 */
-        for (int i = 0; i < 64; i++)
-            cfg[i] = cfg_read(0x1D);    /* each read returns config[i], auto-increments */
+    cfg_write(0x1F, 0xFF);          /* enter config mode             */
+    (void)cfg_read(0x1D);           /* 2 throwaway reads warm up the access path */
+    (void)cfg_read(0x1D);
+    cfg_write(0x1E, 0x00);          /* stateConfigRegisterAccess = 0 */
+    for (int i = 0; i < 64; i++)
+        cfg[i] = cfg_read(0x1D);    /* each read returns config[i], auto-increments */
 
-        sidkick_config_end();
-
-        bool all_same = true;
-        for (int i = 1; i < 64; i++)
-            if (cfg[i] != cfg[0]) { all_same = false; break; }
-        if (cfg[0] <= 3 && !all_same)   /* engaged + real data → done */
-            return;
-    }
+    sidkick_config_end();
 }
 
 /* Write all 64 config bytes then apply them live (0xFE = apply without writing
- * flash, so changes are temporary and revert on power cycle).  Self-contained. */
+ * flash, so changes are temporary and revert on power cycle). */
 static void sidkick_write_config(const uint8_t cfg[64])
 {
     sidkick_config_begin();
 
     cfg_write(0x1F, 0xFF);          /* enter config mode             */
-    (void)cfg_read(0x1D);           /* 2 throwaway reads absorb the 0x4C stub */
-    (void)cfg_read(0x1D);
     cfg_write(0x1E, 0x00);          /* stateConfigRegisterAccess = 0 */
     for (int i = 0; i < 64; i++)
         cfg_write(0x1D, cfg[i]);    /* config[i] = cfg[i], auto-increments */
@@ -837,45 +821,27 @@ static void sidkick_print_config(void)
 }
 
 /* DIAGNOSTIC: write config[i] = i (NO apply → live audio & saved flash untouched,
- * reverts on power cycle) then read it back.  Like reads, the first config
- * session after a cold boot may not engage, so retry the write session until a
- * readback confirms it took. */
+ * reverts on power cycle) then read it back.  back[i] == i means single-cycle
+ * writes land correctly and in sync with reads; any deviation pinpoints the
+ * write-path fault. */
 static void sidkick_write_selftest(void)
 {
-    uint8_t back[64];
-    int attempt, errors = 64;
-
-    for (attempt = 1; attempt <= 8; attempt++) {
-        sidkick_config_begin();
-
-        /* Establish config mode IN THIS SESSION: re-enter until a probe read
-         * returns real config data (cfg[0] = valid SID type 0-3).  Cold-start
-         * writes only take once config mode is genuinely engaged, so we don't
-         * drop out of the session (no config_end) before writing. */
-        for (int k = 0; k < 8; k++) {
-            cfg_write(0x1F, 0xFF);      /* enter config mode */
-            (void)cfg_read(0x1D);       /* absorb 0x4C stub  */
-            cfg_write(0x1E, 0x00);      /* reset pointer     */
-            if (cfg_read(0x1D) <= 3)    /* probe config[0]: engaged? */
-                break;
-        }
-
-        /* Write the ramp in the same (now-established) session. */
-        cfg_write(0x1E, 0x00);          /* reset pointer = 0 */
-        for (int i = 0; i < 64; i++)
-            cfg_write(0x1D, (uint8_t)i);  /* config[i] = i */
-        sidkick_config_end();
-
-        sidkick_read_config(back);
-        errors = 0;
-        for (int i = 0; i < 64; i++)
-            if (back[i] != (uint8_t)i) errors++;
-        if (errors == 0) break;         /* write took */
-    }
-
-    printf("WRITE self-test (attempt %d, wrote config[i]=i):\r\n", attempt);
+    sidkick_config_begin();
+    cfg_write(0x1F, 0xFF);          /* enter config mode */
+    cfg_write(0x1E, 0x00);          /* reset pointer = 0 */
     for (int i = 0; i < 64; i++)
+        cfg_write(0x1D, (uint8_t)i);  /* config[i] = i */
+    sidkick_config_end();
+
+    uint8_t back[64];
+    sidkick_read_config(back);
+
+    int errors = 0;
+    printf("WRITE self-test (wrote config[i]=i, expect back[i]==i):\r\n");
+    for (int i = 0; i < 64; i++) {
+        if (back[i] != (uint8_t)i) errors++;
         printf("[%02d]=0x%02X%s", i, back[i], (i % 8 == 7) ? "\r\n" : " ");
+    }
     printf("Mismatches: %d / 64\r\n\r\n", errors);
 }
 
@@ -920,8 +886,8 @@ int main(void)
     stdio_init_all();
     pio_uart_init();
     sid_init();
-    sidkick_print_config();   /* read works — leave it alone */
-    sidkick_write_selftest();  /* now isolate the write problem */
+    sidkick_print_config();
+    sidkick_write_selftest();
 
     sd_card_t *sd = sd_get_by_num(0);
     FRESULT fr = f_mount(&sd->fatfs, sd->pcName, 1);

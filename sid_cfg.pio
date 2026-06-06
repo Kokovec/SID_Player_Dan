@@ -1,0 +1,45 @@
+;
+; SIDKick config-register bus cycle, hardware-synchronized to phi2.
+;
+; phi2 is generated continuously by PWM on GP16 (~985 kHz, what the SIDKick
+; expects).  This state machine performs exactly ONE clean 6502-style bus cycle
+; per trigger, locked to phi2 by `wait gpio 16` (hardware edge sync — no polling
+; jitter, so the access lands in exactly one phi2 cycle every time).
+;
+; The CPU pre-drives address (GP8-12), R/W (GP14) and, for a write, the data bus
+; (GP0-7).  This SM owns only /CS (GP13) and samples the data bus (GP0-7).
+;   - push one word to the TX FIFO  -> one bus cycle is performed
+;   - one byte is returned in the RX FIFO (the sampled data bus; valid for reads,
+;     ignored for writes)
+;
+; NOTE: the GPIO number in the `wait` instructions (16) must match SID_CLK.
+
+.program sid_cfg
+
+.wrap_target
+    pull block              ; wait for a trigger word (value unused)
+    wait 1 gpio 16          ; ensure phi2 HIGH (known starting phase)
+    wait 0 gpio 16          ; phi2 falling edge -> LOW phase begins
+    set pins, 0             ; assert /CS low while phi2 is low (clean setup)
+    wait 1 gpio 16          ; phi2 rising edge -> THE access (/CS already low)
+    wait 0 gpio 16          ; phi2 falling edge -> SIDKick has driven read data
+    in pins, 8      [29]    ; sample data bus at the falling edge, hold /CS ~200 ns (write latch)
+    push block              ; return the sampled byte
+    set pins, 1             ; deassert /CS
+.wrap
+
+% c-sdk {
+static inline void sid_cfg_program_init(PIO pio, uint sm, uint offset,
+                                        uint cs_pin, uint data_base) {
+    pio_sm_config c = sid_cfg_program_get_default_config(offset);
+    sm_config_set_set_pins(&c, cs_pin, 1);          /* /CS driven via SET      */
+    sm_config_set_in_pins(&c, data_base);           /* data bus base for IN    */
+    sm_config_set_in_shift(&c, false, false, 32);   /* shift left, manual push */
+    /* SM runs at full system clock; the [29] delay is ~200 ns at 150 MHz.
+       Bus phase timing comes entirely from the phi2 `wait` syncs, not clkdiv. */
+    pio_sm_init(pio, sm, offset, &c);
+    /* /CS starts HIGH (deasserted), output. */
+    pio_sm_set_pins_with_mask(pio, sm, 1u << cs_pin, 1u << cs_pin);
+    pio_sm_set_pindirs_with_mask(pio, sm, 1u << cs_pin, 1u << cs_pin);
+}
+%}

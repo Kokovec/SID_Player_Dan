@@ -76,6 +76,7 @@ add_executable(SID_Player_Dan
 
 pico_generate_pio_header(SID_Player_Dan ${CMAKE_CURRENT_LIST_DIR}/uart_tx.pio)
 pico_generate_pio_header(SID_Player_Dan ${CMAKE_CURRENT_LIST_DIR}/uart_rx.pio)
+pico_generate_pio_header(SID_Player_Dan ${CMAKE_CURRENT_LIST_DIR}/sid_cfg.pio)
 
 pico_set_program_name(SID_Player_Dan "SID_Player_Dan")
 pico_set_program_version(SID_Player_Dan "0.1")
