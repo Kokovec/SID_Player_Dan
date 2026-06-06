@@ -10,7 +10,6 @@
 #include "sid_comms.h"
 #include "uart_tx.pio.h"
 #include "uart_rx.pio.h"
-#include "sid_cfg.pio.h"
 
 /* SID file header — all multi-byte fields are big-endian */
 typedef struct __attribute__((packed)) {
@@ -715,9 +714,15 @@ static uint8_t play_sid_file(const char *path)
         printf("Random ($D41B) = 0x%02X (%u)\r\n", rand_val, rand_val);
     }
 
-    /* Silence SID chip before next tune */
+    /* Silence both SIDs before the next tune.  SID1 directly; SID2 with the
+     * $D500-detect line high so the SIDKick routes the zero-writes to it
+     * (harmless if SID2 is disabled, e.g. a mono tune). */
     for (uint8_t r = 0; r < 0x19; r++)
         sid_write(r, 0x00);
+    gpio_put(SID_D500, 1);
+    for (uint8_t r = 0; r < 0x19; r++)
+        sid_write(r, 0x00);
+    gpio_put(SID_D500, 0);
     sleep_ms(300);
     return stop_cmd;
 }
@@ -784,14 +789,23 @@ static void sidkick_read_config(uint8_t cfg[64])
 }
 
 /* Write all 64 config bytes then apply them live (0xFE = apply without writing
- * flash, so changes are temporary and revert on power cycle).  Self-contained. */
+ * flash, so changes are temporary and revert on power cycle).  Self-contained.
+ *
+ * Cold-start writes only take once config mode is genuinely engaged, so first
+ * establish it with an in-session read probe (re-enter until cfg[0] is a valid
+ * SID type), then write in that SAME session without dropping out. */
 static void sidkick_write_config(const uint8_t cfg[64])
 {
     sidkick_config_begin();
 
-    cfg_write(0x1F, 0xFF);          /* enter config mode             */
-    (void)cfg_read(0x1D);           /* 2 throwaway reads absorb the 0x4C stub */
-    (void)cfg_read(0x1D);
+    for (int k = 0; k < 8; k++) {
+        cfg_write(0x1F, 0xFF);      /* enter config mode */
+        (void)cfg_read(0x1D);       /* absorb 0x4C stub  */
+        cfg_write(0x1E, 0x00);      /* reset pointer     */
+        if (cfg_read(0x1D) <= 3)    /* probe config[0]: engaged? */
+            break;
+    }
+
     cfg_write(0x1E, 0x00);          /* stateConfigRegisterAccess = 0 */
     for (int i = 0; i < 64; i++)
         cfg_write(0x1D, cfg[i]);    /* config[i] = cfg[i], auto-increments */
@@ -836,49 +850,6 @@ static void sidkick_print_config(void)
     sidkick_print_config_decoded(cfg);
 }
 
-/* DIAGNOSTIC: write config[i] = i (NO apply → live audio & saved flash untouched,
- * reverts on power cycle) then read it back.  Like reads, the first config
- * session after a cold boot may not engage, so retry the write session until a
- * readback confirms it took. */
-static void sidkick_write_selftest(void)
-{
-    uint8_t back[64];
-    int attempt, errors = 64;
-
-    for (attempt = 1; attempt <= 8; attempt++) {
-        sidkick_config_begin();
-
-        /* Establish config mode IN THIS SESSION: re-enter until a probe read
-         * returns real config data (cfg[0] = valid SID type 0-3).  Cold-start
-         * writes only take once config mode is genuinely engaged, so we don't
-         * drop out of the session (no config_end) before writing. */
-        for (int k = 0; k < 8; k++) {
-            cfg_write(0x1F, 0xFF);      /* enter config mode */
-            (void)cfg_read(0x1D);       /* absorb 0x4C stub  */
-            cfg_write(0x1E, 0x00);      /* reset pointer     */
-            if (cfg_read(0x1D) <= 3)    /* probe config[0]: engaged? */
-                break;
-        }
-
-        /* Write the ramp in the same (now-established) session. */
-        cfg_write(0x1E, 0x00);          /* reset pointer = 0 */
-        for (int i = 0; i < 64; i++)
-            cfg_write(0x1D, (uint8_t)i);  /* config[i] = i */
-        sidkick_config_end();
-
-        sidkick_read_config(back);
-        errors = 0;
-        for (int i = 0; i < 64; i++)
-            if (back[i] != (uint8_t)i) errors++;
-        if (errors == 0) break;         /* write took */
-    }
-
-    printf("WRITE self-test (attempt %d, wrote config[i]=i):\r\n", attempt);
-    for (int i = 0; i < 64; i++)
-        printf("[%02d]=0x%02X%s", i, back[i], (i % 8 == 7) ? "\r\n" : " ");
-    printf("Mismatches: %d / 64\r\n\r\n", errors);
-}
-
 /* Apply the mono or stereo-centered profile.  Reads the current config first so
  * only the relevant indices change (filter calibration, checksums, etc. are
  * preserved), writes it back, applies live, then reads back and prints for
@@ -920,8 +891,7 @@ int main(void)
     stdio_init_all();
     pio_uart_init();
     sid_init();
-    sidkick_print_config();   /* read works — leave it alone */
-    sidkick_write_selftest();  /* now isolate the write problem */
+    sidkick_print_config();   /* show current SIDKick config at boot */
 
     sd_card_t *sd = sd_get_by_num(0);
     FRESULT fr = f_mount(&sd->fatfs, sd->pcName, 1);
