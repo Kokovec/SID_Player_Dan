@@ -759,21 +759,29 @@ static bool get_sid_path(const char *drive, uint16_t idx,
     return found;
 }
 
-/* Read all 64 SIDKick config bytes.  Self-contained.
+/* Read all 64 SIDKick config bytes.  Returns true on a valid read.  Self-contained.
  *
- * The first config session after boot often doesn't engage — $D41D then returns
- * the 0x4C launch stub (or floating 0xFF, or all 0x00).  So run the read session
- * and validate the result; if it's clearly garbage, run it again.  A valid read
- * has cfg[0] = a real SID type (0-3) and is not a single repeated byte (which is
- * what every failure mode looks like: all 0x4C/0xFF/0x00). */
-static void sidkick_read_config(uint8_t cfg[64])
+ * On a cold SIDKick the first config session often doesn't engage — $D41D then
+ * returns the 0x4C launch stub (or floating 0xFF, or all 0x00).  Two layers of
+ * robustness, the same that made writes reliable:
+ *   - establish config mode IN-SESSION (re-enter on a stable slow clock until a
+ *     probe read returns a real config byte) rather than cycling the clock; and
+ *   - validate the whole 64-byte result and retry the session if it's garbage.
+ * A valid read has cfg[0] = a real SID type (0-3) and is not a single repeated
+ * byte (every failure mode is all 0x4C / 0xFF / 0x00). */
+static bool sidkick_read_config(uint8_t cfg[64])
 {
-    for (int attempt = 0; attempt < 8; attempt++) {
+    for (int attempt = 0; attempt < 4; attempt++) {
         sidkick_config_begin();
 
-        cfg_write(0x1F, 0xFF);          /* enter config mode             */
-        (void)cfg_read(0x1D);           /* 2 throwaway reads absorb the 0x4C stub */
-        (void)cfg_read(0x1D);
+        for (int k = 0; k < 16; k++) {  /* establish config mode in-session */
+            cfg_write(0x1F, 0xFF);      /* enter config mode */
+            (void)cfg_read(0x1D);       /* absorb 0x4C stub  */
+            cfg_write(0x1E, 0x00);      /* reset pointer     */
+            if (cfg_read(0x1D) <= 3)    /* probe config[0]: engaged? */
+                break;
+        }
+
         cfg_write(0x1E, 0x00);          /* stateConfigRegisterAccess = 0 */
         for (int i = 0; i < 64; i++)
             cfg[i] = cfg_read(0x1D);    /* each read returns config[i], auto-increments */
@@ -784,8 +792,9 @@ static void sidkick_read_config(uint8_t cfg[64])
         for (int i = 1; i < 64; i++)
             if (cfg[i] != cfg[0]) { all_same = false; break; }
         if (cfg[0] <= 3 && !all_same)   /* engaged + real data → done */
-            return;
+            return true;
     }
+    return false;                       /* never engaged — caller must not apply garbage */
 }
 
 /* Write all 64 config bytes then apply them live (0xFE = apply without writing
@@ -857,7 +866,12 @@ static void sidkick_print_config(void)
 static void sidkick_apply_profile(bool stereo, bool ntsc)
 {
     uint8_t cfg[64];
-    sidkick_read_config(cfg);
+    if (!sidkick_read_config(cfg)) {
+        /* Read never engaged — do NOT write/apply garbage (that misconfigures
+         * the SID and kills playback).  Leave the SIDKick config untouched. */
+        printf("SIDKick config read failed — leaving config unchanged\r\n");
+        return;
+    }
 
     /* Common to both profiles */
     cfg[0]  = 1;             /* SID1 = 8580            */
