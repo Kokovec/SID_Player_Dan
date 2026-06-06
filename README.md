@@ -53,4 +53,4 @@
 | 27 | AUDIO OUT | Analog audio output |
 | 28 | VDD | +12 V (6581) or +9 V (8580) |
 
-![Alt Text] docs/SIDkick_Pico_DAC.jpg
+!![Alt Text](docs/SIDkick_Pico_DAC.jpg)
