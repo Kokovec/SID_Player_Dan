@@ -487,8 +487,8 @@ static uint8_t play_sid_file(const char *path, uint8_t *song_sel)
      * Done before sid_set_clock() because the config write temporarily slows
      * phi2 and restores it to PAL. */
     bool stereo = is_2sid_file(path);
-    printf("\r\n%s tune detected → configuring SIDKick...\r\n", stereo ? "2SID stereo" : "Mono");
-    sidkick_apply_profile(stereo, ntsc);
+    printf("\r\n%s tune detected\r\n", stereo ? "2SID stereo" : "Mono");
+    sidkick_apply_profile(stereo, ntsc);   /* prints what it actually did */
     sid_set_clock(ntsc);
 
     /* Resolve the load address and where the binary data starts — once. */
@@ -750,15 +750,6 @@ play_subtune: ;
     *song_sel = song_idx;    /* report the last-played subtune back to the caller */
     f_close(&fil);
 
-    if (stop_cmd == CMD_STOP) {
-        /* LFSR has been running since sid_init(); read before silencing.
-         * Use the bit-banged bus so the read reliably registers. */
-        sidkick_config_begin();
-        uint8_t rand_val = cfg_read(0x1B);
-        sidkick_config_end();
-        printf("Random ($D41B) = 0x%02X (%u)\r\n", rand_val, rand_val);
-    }
-
     /* Silence both SIDs before the next tune.  SID1 directly; SID2 with the
      * $D500-detect line high so the SIDKick routes the zero-writes to it
      * (harmless if SID2 is disabled, e.g. a mono tune). */
@@ -833,10 +824,19 @@ static bool sidkick_read_config(uint8_t cfg[64])
 
         sidkick_config_end();
 
+        /* Validate: a real config has these firm invariants.  This also rejects
+         * a partially-garbage read (stray 0xFF bytes) which, if written back,
+         * could put a command value (0xFB reset / 0xFE / 0xFF) on $D41D and hang
+         * the SIDKick. */
         bool all_same = true;
         for (int i = 1; i < 64; i++)
             if (cfg[i] != cfg[0]) { all_same = false; break; }
-        if (cfg[0] <= 3 && !all_same)   /* engaged + real data → done */
+        if (!all_same &&
+            cfg[0] <= 3 &&              /* SID1 type   */
+            cfg[8] <= 3 &&              /* SID2 type   */
+            cfg[2] <= 1 &&              /* register-read flag (0/1) */
+            cfg[3] <= 15 &&             /* SID1 volume (0-14) */
+            cfg[11] <= 15)              /* SID2 volume (0-14) */
             return true;
     }
     return false;                       /* never engaged — caller must not apply garbage */
@@ -861,8 +861,14 @@ static void sidkick_write_config(const uint8_t cfg[64])
     }
 
     cfg_write(0x1E, 0x00);          /* stateConfigRegisterAccess = 0 */
-    for (int i = 0; i < 64; i++)
-        cfg_write(0x1D, cfg[i]);    /* config[i] = cfg[i], auto-increments */
+    for (int i = 0; i < 64; i++) {
+        /* On $D41D a write of 0xFB is "reset", 0xFE "apply", 0xFF "save to
+         * flash" — commands, not data.  A real config byte is never that high
+         * (max ~0xAA), so clamp to 0xFA: a stray/garbage byte can never reset or
+         * hang the SIDKick. */
+        uint8_t v = cfg[i] > 0xFA ? 0xFA : cfg[i];
+        cfg_write(0x1D, v);         /* config[i] = v, auto-increments */
+    }
 
     cfg_write(0x1D, 0xFE);          /* apply live (no flash write)   */
 
@@ -904,45 +910,70 @@ static void sidkick_print_config(void)
     sidkick_print_config_decoded(cfg);
 }
 
-/* Apply the mono or stereo-centered profile.  Reads the current config first so
- * only the relevant indices change (filter calibration, checksums, etc. are
- * preserved), writes it back, applies live, then reads back and prints for
- * confirmation.  stereo=false → mono, stereo=true → stereo centered. */
+/* Apply the mono or stereo-centered profile.  Overlays only the relevant indices
+ * onto the current config (filter calibration/checksums preserved) and writes
+ * back only if something changed.  stereo=false → mono, stereo=true → stereo.
+ *
+ * Crucially: touch the config bus ONLY when the profile actually changes.  Every
+ * config read/write switches phi2 to 294 kHz and enters config mode; doing that
+ * per-tune eventually leaves the SIDKick deaf to SID writes (recoverable only by
+ * a 5 V power cycle — not /RES).  So a run of same-profile tunes does ZERO config
+ * access. */
 static void sidkick_apply_profile(bool stereo, bool ntsc)
 {
+    static int last_profile = -1;   /* (stereo<<1)|ntsc of the last applied profile */
+    int profile = (stereo ? 2 : 0) | (ntsc ? 1 : 0);
+    if (profile == last_profile) {
+        printf("SIDKick profile unchanged (%s%s) — no config access\r\n",
+               stereo ? "stereo" : "mono", ntsc ? ", NTSC" : "");
+        return;
+    }
+
     uint8_t cfg[64];
     if (!sidkick_read_config(cfg)) {
         /* Read never engaged — do NOT write/apply garbage (that misconfigures
-         * the SID and kills playback).  Leave the SIDKick config untouched. */
+         * the SID and kills playback).  Leave the SIDKick config untouched and
+         * do NOT cache the profile, so we retry on the next tune. */
         printf("SIDKick config read failed — leaving config unchanged\r\n");
         return;
     }
 
+    uint8_t want[64];
+    memcpy(want, cfg, 64);
+
     /* Common to both profiles */
-    cfg[0]  = 1;             /* SID1 = 8580            */
-    cfg[2]  = 1;            /* register reads enabled */
-    cfg[3]  = 14;           /* SID1 volume max        */
-    cfg[58] = 7;            /* balance centre         */
-    cfg[59] = ntsc ? 1 : 0; /* clock tracks SID header: 0=PAL, 1=NTSC */
+    want[0]  = 1;             /* SID1 = 8580            */
+    want[2]  = 1;             /* register reads enabled */
+    want[3]  = 14;            /* SID1 volume max        */
+    want[58] = 7;             /* balance centre         */
+    want[59] = ntsc ? 1 : 0;  /* clock tracks SID header: 0=PAL, 1=NTSC */
 
     if (stereo) {
-        cfg[8]  = 1;    /* SID2 = 8580 (enabled) */
-        cfg[10] = 2;    /* SID2 address = $D500  */
-        cfg[11] = 14;   /* SID2 volume max       */
-        cfg[12] = 7;    /* panning centred       */
+        want[8]  = 1;    /* SID2 = 8580 (enabled) */
+        want[10] = 2;    /* SID2 address = $D500  */
+        want[11] = 14;   /* SID2 volume max       */
+        want[12] = 7;    /* panning centred       */
     } else {
-        cfg[1]  = 12;   /* SID1 digiboost     */
-        cfg[8]  = 3;    /* SID2 disabled (mono) */
-        cfg[60] = 16;   /* pot filter default */
-        cfg[61] = 0;    /* digi detect off    */
+        want[1]  = 12;   /* SID1 digiboost     */
+        want[8]  = 3;    /* SID2 disabled (mono) */
+        want[60] = 16;   /* pot filter default */
+        want[61] = 0;    /* digi detect off    */
     }
 
-    sidkick_write_config(cfg);
+    /* Only write/apply if something actually changed.  Re-applying (the 0xFE
+     * apply makes the SIDKick reinitialize reSID) on every tune — even when the
+     * config already matches — can leave it deaf to SID writes.  So skip the
+     * write entirely when the SIDKick is already configured the way we want. */
+    if (memcmp(want, cfg, 64) == 0) {
+        printf("SIDKick already configured for %s — no change\r\n",
+               stereo ? "stereo" : "mono");
+        last_profile = profile;     /* cache: skip the bus next same-profile tune */
+        return;
+    }
 
+    sidkick_write_config(want);
+    last_profile = profile;
     printf("\r\n>>> Applied %s profile <<<\r\n", stereo ? "STEREO CENTRED" : "MONO");
-    uint8_t back[64];
-    sidkick_read_config(back);
-    sidkick_print_config_decoded(back);
 }
 
 int main(void)
