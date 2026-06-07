@@ -8,7 +8,7 @@
          SID D5 ── GP5  [ 7] [34] GP28 ── (free)
                    GND  [ 8] [33] GND
          SID D6 ── GP6  [ 9] [32] GP27 ── (free)
-         SID D7 ── GP7  [10] [31] GP26 ── Level shifter /OE
+         SID D7 ── GP7  [10] [31] GP26 ── Sidkick A8/A10 ($D500)
          SID A0 ── GP8  [11] [30] RUN
          SID A1 ── GP9  [12] [29] GP22 ── PIO UART RX ← Display Pico TX
                    GND  [13] [28] GND
@@ -52,3 +52,5 @@
 | 26 | EXT_IN | External audio input — unused (tie to GND) |
 | 27 | AUDIO OUT | Analog audio output |
 | 28 | VDD | +12 V (6581) or +9 V (8580) |
+
+![Alt Text](docs/SIDkick_Pico_DAC.jpg)
