@@ -21,10 +21,13 @@
 #define PKT_TYPE_CMD    0x02    // Display → Player : command
 
 // Commands (single-byte payload in a CMD packet)
-#define CMD_PLAY        0x01    // play current song
-#define CMD_NEXT        0x02    // advance to next song, send metadata, wait
-#define CMD_PREV        0x04    // go to previous song, send metadata, wait
-#define CMD_STOP        0x05    // stop playback, stay on current song, wait
+#define CMD_PLAY        0x01    // play current file
+#define CMD_NEXT        0x02    // advance to next file, send metadata, wait
+#define CMD_PREV        0x04    // go to previous file, send metadata, wait
+#define CMD_STOP        0x05    // stop playback, stay on current file, wait
+#define CMD_NEXT_TUNE   0x06    // next subtune within the current SID file
+#define CMD_PREV_TUNE   0x07    // previous subtune within the current SID file
+#define CMD_REQUEST_META 0x08   // Display → Player: resend current metadata
 
 // -----------------------------------------------------------------------
 // Metadata payload  (Player → Display)

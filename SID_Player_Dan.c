@@ -379,22 +379,12 @@ static bool is_2sid_file(const char *name)
     return false;
 }
 
-/* Read a SID file's header, populate SidMeta, and send it to the Display Pico.
- * Returns false if the file cannot be opened or is not a valid SID. */
-static bool send_sid_meta(const char *path)
+/* Build a SidMeta from an already-parsed header and send it to the Display Pico.
+ * song_num is 1-based; pass 0 to use the file's default start song. */
+static void send_meta_from_header(const SIDHeader *h, const char *path, uint8_t song_num)
 {
-    FIL fil; UINT br;
-    if (f_open(&fil, path, FA_READ) != FR_OK) return false;
-    uint8_t hdr[0x7C];
-    bool ok = (f_read(&fil, hdr, sizeof(hdr), &br) == FR_OK && br >= 0x76);
-    f_close(&fil);
-    if (!ok) return false;
-    const SIDHeader *h = (const SIDHeader *)hdr;
-    if (memcmp(h->magic, "PSID", 4) != 0 && memcmp(h->magic, "RSID", 4) != 0)
-        return false;
-
     SidMeta meta = {0};
-    meta.song_num   = (uint8_t)be16(h->start_song);
+    meta.song_num   = song_num ? song_num : (uint8_t)be16(h->start_song);
     meta.song_count = (uint8_t)be16(h->songs);
     memcpy(meta.title,    h->title,    SID_TITLE_LEN - 1);
     memcpy(meta.author,   h->author,   SID_AUTHOR_LEN - 1);
@@ -407,19 +397,33 @@ static bool send_sid_meta(const char *path)
     if (dot) *dot = '\0';
 
     send_meta(&meta);
-    return true;
+}
+
+/* Read and validate a SID file header into hdr[0x7C].
+ * Returns true if the file opens and is a valid PSID/RSID. */
+static bool read_sid_header(const char *path, uint8_t hdr[0x7C])
+{
+    FIL fil; UINT br;
+    if (f_open(&fil, path, FA_READ) != FR_OK) return false;
+    bool ok = (f_read(&fil, hdr, 0x7C, &br) == FR_OK && br >= 0x76);
+    f_close(&fil);
+    if (!ok) return false;
+    const SIDHeader *h = (const SIDHeader *)hdr;
+    return memcmp(h->magic, "PSID", 4) == 0 || memcmp(h->magic, "RSID", 4) == 0;
 }
 
 /* Defined below, after the SD helpers — applies the mono/stereo SIDKick profile. */
 static void sidkick_apply_profile(bool stereo, bool ntsc);
 
-/* Load a SID file from the SD card, run INIT, then call PLAY at the
- * correct rate until CMD_NEXT, CMD_PREV, or CMD_STOP is received.
- * Returns the command that stopped playback (CMD_NEXT/PREV/STOP),
- * or 0 if the file could not be loaded.
+/* Load a SID file from the SD card, run INIT, then call PLAY at the correct rate
+ * until CMD_NEXT, CMD_PREV, or CMD_STOP is received.  CMD_NEXT_TUNE/PREV_TUNE
+ * change subtunes live without leaving the file.
+ * *song_sel (0-based) selects the starting subtune and is updated to the
+ * last-played subtune on return, so a later replay resumes where you left off.
+ * Returns the command that stopped playback (CMD_NEXT/PREV/STOP), or 0 on error.
  * PSID (play_addr != 0): direct polling.
  * RSID (play_addr == 0): CIA1 timer A drives IRQ-based playback. */
-static uint8_t play_sid_file(const char *path)
+static uint8_t play_sid_file(const char *path, uint8_t *song_sel)
 {
     FIL    fil;
     UINT   br;
@@ -456,17 +460,17 @@ static uint8_t play_sid_file(const char *path)
     uint16_t start_song  = be16(h->start_song);
     uint32_t speed       = be32(h->speed);
 
-    /* Determine clock (PAL / NTSC) and play rate from header flags */
+    /* Determine clock (PAL / NTSC) from the header flags — per file. */
     bool ntsc = false;
     if (version >= 2 && data_offset >= 0x7C) {
         uint8_t clk = (be16(h->flags) >> 2) & 0x3;
         ntsc = (clk == 2);  /* 1=PAL, 2=NTSC, 3=both → prefer PAL */
     }
-    uint8_t  song_idx  = (start_song >= 1) ? (uint8_t)(start_song - 1) : 0;
-    bool     cia_timer = (song_idx < 32) ? (bool)((speed >> song_idx) & 1) : true;
-    uint32_t play_hz   = (ntsc || cia_timer) ? 60u : 50u;
+    uint16_t songs    = be16(h->songs); if (songs == 0) songs = 1;
+    uint8_t  song_idx = *song_sel;          /* caller-selected starting subtune */
+    if (song_idx >= songs) song_idx = 0;
 
-    /* Print what we're about to play */
+    /* Print file info (once) */
     char title[33], author[33], released[33];
     memcpy(title,    h->title,    32); title[32]    = '\0';
     memcpy(author,   h->author,   32); author[32]   = '\0';
@@ -475,23 +479,54 @@ static uint8_t play_sid_file(const char *path)
     printf("Title   : %s\r\n", title);
     printf("Author  : %s\r\n", author);
     printf("Released: %s\r\n", released);
-    printf("Songs   : %u  (default %u)\r\n", be16(h->songs), start_song);
-    printf("Clock   : %s   Play rate: %u Hz\r\n", ntsc ? "NTSC" : "PAL", (unsigned)play_hz);
+    printf("Songs   : %u  (default %u)\r\n", songs, start_song);
+    printf("Clock   : %s\r\n", ntsc ? "NTSC" : "PAL");
 
-    rsid_irq_active = false;
-
-    /* Configure the SIDKick for this tune: stereo-centred if the filename
-     * contains "2SID", otherwise mono.  Clock field tracks the header's PAL/NTSC.
-     * Temporary (no flash write).  Done before sid_set_clock() because the config
-     * write temporarily slows phi2 and restores it to PAL. */
+    /* Configure the SIDKick for this file (per file, not per subtune): stereo if
+     * the filename contains "2SID", otherwise mono.  Clock field tracks PAL/NTSC.
+     * Done before sid_set_clock() because the config write temporarily slows
+     * phi2 and restores it to PAL. */
     bool stereo = is_2sid_file(path);
     printf("\r\n%s tune detected → configuring SIDKick...\r\n", stereo ? "2SID stereo" : "Mono");
     sidkick_apply_profile(stereo, ntsc);
-
-    /* Set phi2 clock for this tune's region */
     sid_set_clock(ntsc);
 
-    /* Reset CIA1 state before loading a new tune */
+    /* Resolve the load address and where the binary data starts — once. */
+    uint32_t data_start = data_offset;
+    if (load_addr == 0) {
+        uint8_t ab[2];
+        if (f_lseek(&fil, data_offset) != FR_OK ||
+            f_read(&fil, ab, 2, &br) != FR_OK || br < 2) {
+            f_close(&fil); return 0;
+        }
+        load_addr  = ab[0] | ((uint16_t)ab[1] << 8);
+        data_start = data_offset + 2;
+    }
+    if (init_addr == 0)             /* PSID spec: init==0 → use load address */
+        init_addr = load_addr;
+    printf("Load    : $%04X  Init: $%04X  Play: $%04X\r\n",
+           load_addr, init_addr, play_addr);
+
+    uint8_t  stop_cmd = 0;
+    uint32_t play_hz  = ntsc ? 60u : 50u;   /* (re)assigned per subtune below */
+
+    /* ===== Subtune (re)start point.  CMD_NEXT_TUNE / CMD_PREV_TUNE change the
+     * subtune and jump back here; file-level commands fall through to exit. ===== */
+play_subtune: ;
+    {
+        bool cia_timer = (song_idx < 32) ? (bool)((speed >> song_idx) & 1) : true;
+        play_hz = (ntsc || cia_timer) ? 60u : 50u;
+    }
+    printf("Subtune : %u/%u   Play rate: %u Hz\r\n",
+           (unsigned)(song_idx + 1), (unsigned)songs, (unsigned)play_hz);
+
+    /* Tell the Display which song is now playing (1-based), so it shows the
+     * current subtune.  Sent on initial play and on every subtune change. */
+    send_meta_from_header(h, path, (uint8_t)(song_idx + 1));
+
+    rsid_irq_active = false;
+
+    /* Reset CIA1 state before (re)loading */
     memset(&cia1, 0, sizeof(cia1));
 
     /* Prepare 6502 memory: clear, fill KERNAL stubs, place sentinel */
@@ -529,39 +564,21 @@ static uint8_t play_sid_file(const char *path)
     memory[0xFFFE] = 0x48; memory[0xFFFF] = 0xFF;  /* IRQ vector → $FF48 */
     memory[SENTINEL] = 0x60;                        /* RTS at sentinel */
 
-    /* Seek to binary data, resolve embedded load address if needed */
-    fr = f_lseek(&fil, data_offset);
-    if (fr != FR_OK) { f_close(&fil); return 0; }
-
-    if (load_addr == 0) {
-        uint8_t ab[2];
-        if (f_read(&fil, ab, 2, &br) != FR_OK || br < 2) {
-            f_close(&fil);
-            return 0;
-        }
-        load_addr = ab[0] | ((uint16_t)ab[1] << 8);
+    /* (Re)load the binary for this subtune into 6502 address space.  The file is
+     * kept open across subtunes; we just re-seek to the resolved data start. */
+    if (f_lseek(&fil, data_start) != FR_OK ||
+        f_read(&fil, &memory[load_addr], 0x10000u - load_addr, &br) != FR_OK) {
+        printf("Data read failed\r\n");
+        f_close(&fil);
+        return 0;
     }
-    /* PSID spec: init_addr == 0 → use load address */
-    if (init_addr == 0)
-        init_addr = load_addr;
-    printf("Load    : $%04X  Init: $%04X  Play: $%04X\r\n",
-           load_addr, init_addr, play_addr);
 
-    /* Read binary directly into 6502 address space */
-    uint32_t space = 0x10000u - load_addr;
-    fr = f_read(&fil, &memory[load_addr], space, &br);
-    f_close(&fil);
-    if (fr != FR_OK) { printf("Data read failed\r\n"); return 0; }
-    printf("Loaded  : %u bytes\r\n", (unsigned)br);
-
-    /* Initialise 6502 and call INIT */
+    /* Initialise 6502 and call INIT for this subtune */
     M6502 cpu = {0};
     cpu.read  = cpu_read;
     cpu.write = cpu_write;
     m6502_power(&cpu, TRUE);
     call_routine(&cpu, init_addr, song_idx, 0, 0);
-
-    uint8_t stop_cmd = 0;
 
     if (play_addr != 0) {
         /* PSID: poll the play routine at the declared rate */
@@ -579,8 +596,15 @@ static uint8_t play_sid_file(const char *path)
                 dbg_sid_writes = 0;
             }
             stop_cmd = poll_cmd();
-            if (stop_cmd == CMD_NEXT || stop_cmd == CMD_PREV || stop_cmd == CMD_STOP)
+            if (stop_cmd == CMD_REQUEST_META) {  /* resend current song; keep playing */
+                send_meta_from_header(h, path, (uint8_t)(song_idx + 1));
+                stop_cmd = 0;
+            }
+            if (stop_cmd == CMD_NEXT || stop_cmd == CMD_PREV || stop_cmd == CMD_STOP ||
+                stop_cmd == CMD_NEXT_TUNE || stop_cmd == CMD_PREV_TUNE)
                 break;
+            if (stop_cmd == CMD_REQUEST_META)
+                send_meta_from_header(h, path, (uint8_t)(song_idx + 1));
             while (time_us_64() < next_frame)
                 ;
             next_frame += frame_us;
@@ -695,8 +719,15 @@ static uint8_t play_sid_file(const char *path)
             }
 
             stop_cmd = poll_cmd();
-            if (stop_cmd == CMD_NEXT || stop_cmd == CMD_PREV || stop_cmd == CMD_STOP)
+            if (stop_cmd == CMD_REQUEST_META) {  /* resend current song; keep playing */
+                send_meta_from_header(h, path, (uint8_t)(song_idx + 1));
+                stop_cmd = 0;
+            }
+            if (stop_cmd == CMD_NEXT || stop_cmd == CMD_PREV || stop_cmd == CMD_STOP ||
+                stop_cmd == CMD_NEXT_TUNE || stop_cmd == CMD_PREV_TUNE)
                 break;
+            if (stop_cmd == CMD_REQUEST_META)
+                send_meta_from_header(h, path, (uint8_t)(song_idx + 1));
             while (time_us_64() < next_frame)
                 ;
             next_frame += frame_us;
@@ -704,6 +735,20 @@ static uint8_t play_sid_file(const char *path)
         rsid_irq_active = false;
         current_cpu     = NULL;
     }
+
+    /* Subtune navigation: change the song and restart playback in this same
+     * file (no reload of the SIDKick profile / clock).  File-level commands
+     * (NEXT/PREV/STOP) fall through to exit. */
+    if (stop_cmd == CMD_NEXT_TUNE || stop_cmd == CMD_PREV_TUNE) {
+        if (stop_cmd == CMD_NEXT_TUNE)
+            song_idx = (uint8_t)((song_idx + 1) % songs);
+        else
+            song_idx = (song_idx == 0) ? (uint8_t)(songs - 1) : (uint8_t)(song_idx - 1);
+        goto play_subtune;   /* play_subtune sends the updated song to the Display */
+    }
+
+    *song_sel = song_idx;    /* report the last-played subtune back to the caller */
+    f_close(&fil);
 
     if (stop_cmd == CMD_STOP) {
         /* LFSR has been running since sid_init(); read before silencing.
@@ -921,29 +966,60 @@ int main(void)
     }
     printf("%u .sid files found\r\n", total);
 
-    uint16_t idx = 0;
-    char path[64];
+    uint16_t idx        = 0;
+    char     path[64];
+    uint8_t  song_sel   = 0;      /* selected subtune (0-based) for the current file */
+    bool     reset_song = true;   /* reset selection to the file default on file change */
 
     for (;;) {
-        /* Load metadata for current song and notify Display Pico */
+        /* Load the current file's header */
         if (!get_sid_path(sd->pcName, idx, path, sizeof(path))) {
             idx = (uint16_t)((idx + 1) % total);
             continue;
         }
-        send_sid_meta(path);
+        uint8_t hdr[0x7C];
+        if (!read_sid_header(path, hdr)) {
+            idx = (uint16_t)((idx + 1) % total);
+            continue;
+        }
+        const SIDHeader *h = (const SIDHeader *)hdr;
+        uint16_t songs = be16(h->songs); if (songs == 0) songs = 1;
+        if (reset_song) {
+            uint16_t start = be16(h->start_song);
+            song_sel   = (start >= 1) ? (uint8_t)(start - 1) : 0;
+            reset_song = false;
+        }
+        if (song_sel >= songs) song_sel = 0;
 
-        /* Wait for an actionable command */
+        /* Show the (selected) song on the Display */
+        send_meta_from_header(h, path, (uint8_t)(song_sel + 1));
+
+        /* Wait for an actionable command.  While idle, NEXT_TUNE/PREV_TUNE select
+         * the subtune to play (within this file); REQUEST_META resends. */
         uint8_t cmd = 0;
-        while (cmd != CMD_PLAY && cmd != CMD_NEXT && cmd != CMD_PREV)
-            cmd = poll_cmd();  /* CMD_STOP while idle is a no-op; keep waiting */
+        for (;;) {
+            cmd = poll_cmd();
+            if (cmd == CMD_PLAY || cmd == CMD_NEXT || cmd == CMD_PREV)
+                break;
+            if (cmd == CMD_NEXT_TUNE)
+                song_sel = (uint8_t)((song_sel + 1) % songs);
+            else if (cmd == CMD_PREV_TUNE)
+                song_sel = (song_sel == 0) ? (uint8_t)(songs - 1) : (uint8_t)(song_sel - 1);
+            else if (cmd != CMD_REQUEST_META)
+                continue;   /* CMD_STOP / 0: nothing to do, keep waiting */
+            send_meta_from_header(h, path, (uint8_t)(song_sel + 1));  /* reflect selection */
+        }
 
         if (cmd == CMD_PLAY)
-            cmd = play_sid_file(path);  /* returns CMD that stopped it, or 0 on error */
+            cmd = play_sid_file(path, &song_sel);  /* plays from song_sel, updates it */
 
-        if (cmd == CMD_NEXT)
+        if (cmd == CMD_NEXT) {
             idx = (uint16_t)((idx + 1) % total);
-        else if (cmd == CMD_PREV)
+            reset_song = true;
+        } else if (cmd == CMD_PREV) {
             idx = (idx > 0) ? (uint16_t)(idx - 1) : (uint16_t)(total - 1);
-        /* CMD_STOP or 0: idx unchanged → loop restarts, re-sends meta, waits again */
+            reset_song = true;
+        }
+        /* CMD_STOP or 0: same file; keep song_sel (last-played subtune) */
     }
 }
