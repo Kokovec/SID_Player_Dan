@@ -1,5 +1,3 @@
-
-
 # 🧩 Raspberry Pi Pico → SIDKick + SD Card + Display Pinout
 
 This table documents the full physical pin mapping between the **Raspberry Pi Pico** and connected peripherals: **SIDKick (SID chip emulator)**, **SD card**, and **Display Pico**.
