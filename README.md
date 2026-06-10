@@ -1,29 +1,66 @@
-## 🧩 Raspberry Pi Pico → SIDKick Pinout Reference
+# 🧩 Raspberry Pi Pico → SIDKick + SD Card + Display Pinout
 
-This table shows the mapping between the Raspberry Pi Pico GPIO pins and the SIDKick (SID chip emulator) interface.
+This table documents the full physical pin mapping between the **Raspberry Pi Pico** and connected peripherals: **SIDKick (SID chip emulator)**, **SD card**, and **Display Pico**.
 
-| Pico GPIO | Pico phys pin | Signal | Dir | → SIDKick (SID pin) | Description |
-|------------|----------------|---------|------|----------------------|--------------|
-| GP0 | 1 | D0 | I/O | SID pin 15 | Data bus bit 0 |
-| GP1 | 2 | D1 | I/O | SID pin 16 | Data bus bit 1 |
-| GP2 | 4 | D2 | I/O | SID pin 17 | Data bus bit 2 |
-| GP3 | 5 | D3 | I/O | SID pin 18 | Data bus bit 3 |
-| GP4 | 6 | D4 | I/O | SID pin 19 | Data bus bit 4 |
-| GP5 | 7 | D5 | I/O | SID pin 20 | Data bus bit 5 |
-| GP6 | 9 | D6 | I/O | SID pin 21 | Data bus bit 6 |
-| GP7 | 10 | D7 | I/O | SID pin 22 | Data bus bit 7 |
-| GP8 | 11 | A0 | OUT | SID pin 9 | Address bit 0 |
-| GP9 | 12 | A1 | OUT | SID pin 10 | Address bit 1 |
-| GP10 | 14 | A2 | OUT | SID pin 11 | Address bit 2 |
-| GP11 | 15 | A3 | OUT | SID pin 12 | Address bit 3 |
-| GP12 | 16 | A4 | OUT | SID pin 13 | Address bit 4 |
-| GP13 | 17 | /CS | OUT | SID pin 8 | Chip select, active low |
-| GP14 | 19 | R/W | OUT | SID pin 7 | HIGH = read, LOW = write |
-| GP15 | 20 | /RES | OUT | SID pin 5 | Reset, active low |
-| GP16 | 21 | phi2 | OUT | SID pin 6 | Clock, PWM ~0.985 MHz (PAL) |
-| GP26 | 31 | SID2 sel | OUT | SIDKick $D500 -detect input | HIGH during 2nd-SID writes ($D420/$D500/$DE00/$DF00) |
+| Phys pin | Name | Used as | Connects to |
+|-----------|-------|----------|-------------|
+| 1 | GP0 | D0 | SID D0 (via level shifter) |
+| 2 | GP1 | D1 | SID D1 |
+| 3 | GND | Ground | — |
+| 4 | GP2 | D2 | SID D2 |
+| 5 | GP3 | D3 | SID D3 |
+| 6 | GP4 | D4 | SID D4 |
+| 7 | GP5 | D5 | SID D5 |
+| 8 | GND | Ground | — |
+| 9 | GP6 | D6 | SID D6 |
+| 10 | GP7 | D7 | SID D7 |
+| 11 | GP8 | A0 | SID A0 |
+| 12 | GP9 | A1 | SID A1 |
+| 13 | GND | Ground | — |
+| 14 | GP10 | A2 | SID A2 |
+| 15 | GP11 | A3 | SID A3 |
+| 16 | GP12 | A4 | SID A4 |
+| 17 | GP13 | /CS | SID /CS |
+| 18 | GND | Ground | — |
+| 19 | GP14 | R/W | SID R/W |
+| 20 | GP15 | /RES | SID /RES |
+| 21 | GP16 | phi2 | SID phi2 clock (PWM ~0.985 MHz) |
+| 22 | GP17 | SD /CS | SD card chip select |
+| 23 | GND | Ground | — |
+| 24 | GP18 | SD SCK | SD card clock |
+| 25 | GP19 | SD MOSI | SD card data in |
+| 26 | GP20 | SD MISO | SD card data out |
+| 27 | GP21 | PIO UART RX | → Display Pico RX |
+| 28 | GND | Ground | — |
+| 29 | GP22 | PIO UART TX | → Display Pico TX |
+| 30 | RUN | Reset (unused) | — |
+| 31 | GP26 | SID2 select | SIDKick $D500 – detect input |
+| 32 | GP27 | free/unused | — |
+| 33 | GND | Ground | — |
+| 34 | GP28 | free/unused | — |
+| 35 | ADC_VREF | unused | — |
+| 36 | 3V3(OUT) | 3.3 V out | Level‑shifter VccA (3.3 V side) |
+| 37 | 3V3_EN | unused | — |
+| 38 | GND | Ground | — |
+| 39 | VSYS | 5 V in (power) | board supply |
+| 40 | VBUS | USB 5 V | serial/power when on USB |
 
 ---
+
+## ⚙️ Notes
+
+- **SID bus (D0–D7, A0–A4, /CS, R/W, /RES, phi2):** Handles communication with the SIDKick chip.  
+- **SD card interface (GP17–GP20):** SPI bus for storage access.  
+- **Display Pico UART (GP21–GP22):** Serial communication link.  
+- **Power pins:** VSYS and VBUS provide 5 V input; 3V3(OUT) powers logic‑level components.  
+- **SID2 select:** Used for dual‑SID configurations, active HIGH during 2nd‑SID writes ($D420/$D500/$DE00/$DF00).
+
+
+
+### 🛠️ License
+This documentation is released under the MIT License.  
+Feel free to copy, modify, and distribute with attribution.
+
 
 
                     
