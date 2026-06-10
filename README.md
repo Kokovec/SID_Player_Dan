@@ -1,3 +1,32 @@
+## 🧩 Raspberry Pi Pico → SIDKick Pinout Reference
+
+This table shows the mapping between the Raspberry Pi Pico GPIO pins and the SIDKick (SID chip emulator) interface.
+
+| Pico GPIO | Pico phys pin | Signal | Dir | → SIDKick (SID pin) | Description |
+|------------|----------------|---------|------|----------------------|--------------|
+| GP0 | 1 | D0 | I/O | SID pin 15 | Data bus bit 0 |
+| GP1 | 2 | D1 | I/O | SID pin 16 | Data bus bit 1 |
+| GP2 | 4 | D2 | I/O | SID pin 17 | Data bus bit 2 |
+| GP3 | 5 | D3 | I/O | SID pin 18 | Data bus bit 3 |
+| GP4 | 6 | D4 | I/O | SID pin 19 | Data bus bit 4 |
+| GP5 | 7 | D5 | I/O | SID pin 20 | Data bus bit 5 |
+| GP6 | 9 | D6 | I/O | SID pin 21 | Data bus bit 6 |
+| GP7 | 10 | D7 | I/O | SID pin 22 | Data bus bit 7 |
+| GP8 | 11 | A0 | OUT | SID pin 9 | Address bit 0 |
+| GP9 | 12 | A1 | OUT | SID pin 10 | Address bit 1 |
+| GP10 | 14 | A2 | OUT | SID pin 11 | Address bit 2 |
+| GP11 | 15 | A3 | OUT | SID pin 12 | Address bit 3 |
+| GP12 | 16 | A4 | OUT | SID pin 13 | Address bit 4 |
+| GP13 | 17 | /CS | OUT | SID pin 8 | Chip select, active low |
+| GP14 | 19 | R/W | OUT | SID pin 7 | HIGH = read, LOW = write |
+| GP15 | 20 | /RES | OUT | SID pin 5 | Reset, active low |
+| GP16 | 21 | phi2 | OUT | SID pin 6 | Clock, PWM ~0.985 MHz (PAL) |
+| GP26 | 31 | SID2 sel | OUT | SIDKick $D500 -detect input | HIGH during 2nd-SID writes ($D420/$D500/$DE00/$DF00) |
+
+---
+
+
+                    
                     ┌─────────────────┐
          SID D0 ── GP0  [ 1] [40] VBUS
          SID D1 ── GP1  [ 2] [39] VSYS
