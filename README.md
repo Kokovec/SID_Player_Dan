@@ -1,3 +1,113 @@
+# 🎵 Raspberry Pi Pico SID Tune Player  
+A multi‑Pico hardware project for playing Commodore 64 SID tunes from an SD card.
+
+This system uses **three Raspberry Pi Pico boards** working together to deliver authentic SID playback, touchscreen controls, and visual artwork.
+
+---
+
+## 🧩 System Overview
+
+This project consists of:
+
+### **1. Player Pico 2 (RP2350)**
+- Reads `.sid` files from a micro SD card  
+- Handles tune playback logic  
+- Sends SID register writes to the SIDKick‑Pico board  
+
+### **2. Display Pico (RP2040)**
+- Drives a **2” 240×320 IPS capacitive touchscreen**  
+- Shows tune metadata, background art, and playback controls  
+- Loads UI graphics from the display module’s onboard SD card  
+
+### **3. SIDKick‑Pico (DAC version)**
+- Acts as the SID chip replacement  
+- Receives register writes from the Player Pico  
+- Outputs authentic SID audio  
+
+---
+
+## ✨ Features
+
+- Playback of **mono SID** and **2SID** files  
+- Touchscreen UI with:
+  - Tune metadata  
+  - Background artwork  
+  - Tune & subtune selection  
+  - Playback controls  
+- Automatic background art loading based on tune filename  
+- Default artwork fallback when no tune‑specific image exists <br><br>
+
+![Alt_Text](docs/IMG_8418.JPEG)
+
+---
+
+## 🖥️ Display Module Details
+
+This project uses the **Waveshare 2” Display Module**, featuring:
+
+- 240×320 IPS panel  
+- Capacitive touch  
+- 262K colors  
+- Onboard SD card (used for UI graphics and background art)
+
+### **Required Files on the Display SD Card**
+
+| Filename        | Purpose |
+|-----------------|---------|
+| `controls.bmp`  | Overlay graphic for playback controls |
+| `default.bmp`   | Shown when no tune‑specific art exists |
+| `<tune>.bmp`    | (Optional) Background art matching `<tune>.sid` |
+
+
+### **Background Art Requirements**
+
+- **Format:** `.bmp`  
+- **Resolution:** `240 × 320`  
+- **Color depth:** `16‑bit` (R5 G6 B5)
+
+All files should be placed into the root directory. <br>
+A collection of example background images is included in this repository.<br><br>
+
+![Alt_Text](docs/IMG_8421.JPEG)
+
+---
+
+## 🛠️ Hardware Design Notes
+
+The overall hardware design is intentionally simple and robust, relying on minimal components to safely interface the three Pico boards, the SIDKick‑Pico, and the SD card.
+
+### **SIDKick‑Pico Bus Interface**
+
+The SIDKick‑Pico requires **3.3V ↔ 5V bidirectional level shifting** for the **8‑bit DATA bus**.  
+This ensures safe communication between the 5V‑tolerant SID socket environment and the 3.3V logic of the Pico.
+
+- The DATA bus is **bidirectional**, so proper level shifting is mandatory.
+- The ADDRESS bus and control lines are **unidirectional**, so they do not require full level shifting.
+
+### **Address & Control Lines**
+
+The ADDRESS bus (A0–A4) and control signals (`/CS`, `/RES`, PHI2, etc.) use simple **220 Ω series resistors** for protection and signal conditioning.
+
+This is sufficient because:
+- These lines are **Pico → SIDKick‑Pico only** (unidirectional)
+- The SIDKick‑Pico is designed to accept 3.3V logic on these pins
+
+### **SD Card Storage**
+
+A micro SD card connected to the Player Pico 2 holds all `.sid` files.
+
+- Standard SPI wiring is used (CS, SCK, MOSI, MISO)
+- The Player Pico streams SID register writes to the SIDKick‑Pico in real time
+
+### **2SID File Requirement**
+
+To ensure correct playback, **2SID files must include the string `2SID` in the filename**.<br>
+This allows the Player Pico to automatically detect dual‑SID mode and configure the SIDKick‑Pico accordingly.<br><br>
+
+![Alt_Text](docs/Sid_Player.bmp)
+
+
+
 # 🧩 Raspberry Pi Pico → SIDKick + SD Card + Display Pinout
 
 This table documents the full physical pin mapping between the **Raspberry Pi Pico** and connected peripherals: **SIDKick (SID chip emulator)**, **SD card**, and **Display Pico**.
@@ -56,36 +166,6 @@ This table documents the full physical pin mapping between the **Raspberry Pi Pi
 - **SID2 select:** Used for dual‑SID configurations, active HIGH during 2nd‑SID writes ($D420/$D500/$DE00/$DF00).
 
 
-
-### 🛠️ License
-This documentation is released under the MIT License.  
-Feel free to copy, modify, and distribute with attribution.
-
-
-
-                    
-                    ┌─────────────────┐
-         SID D0 ── GP0  [ 1] [40] VBUS
-         SID D1 ── GP1  [ 2] [39] VSYS
-                   GND  [ 3] [38] GND
-         SID D2 ── GP2  [ 4] [37] 3V3_EN
-         SID D3 ── GP3  [ 5] [36] 3V3(OUT)
-         SID D4 ── GP4  [ 6] [35] ADC_VREF
-         SID D5 ── GP5  [ 7] [34] GP28 ── (free)
-                   GND  [ 8] [33] GND
-         SID D6 ── GP6  [ 9] [32] GP27 ── (free)
-         SID D7 ── GP7  [10] [31] GP26 ── Sidkick A8/A10 ($D500)
-         SID A0 ── GP8  [11] [30] RUN
-         SID A1 ── GP9  [12] [29] GP22 ── PIO UART RX ← Display Pico TX
-                   GND  [13] [28] GND
-         SID A2 ── GP10 [14] [27] GP21 ── PIO UART TX → Display Pico RX
-         SID A3 ── GP11 [15] [26] GP20 ── SD MISO
-         SID A4 ── GP12 [16] [25] GP19 ── SD MOSI
-        SID /CS ── GP13 [17] [24] GP18 ── SD SCK
-                   GND  [18] [23] GND
-    SidKick /OE ── GP14 [19] [22] GP17 ── SD /CS
-       SID /RES ── GP15 [20] [21] GP16 ── phi2 PWM
-                    └─────────────────┘
 
 
 | **SID Pin** | **Name** | **Description** |
