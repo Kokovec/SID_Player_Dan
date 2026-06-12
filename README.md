@@ -66,7 +66,9 @@ This project uses the **Waveshare 2” Display Module**, featuring:
 - **Color depth:** `16‑bit` (R5 G6 B5)
 
 All files should be placed into the root directory. <br>
-A collection of example background images is included in this repository.
+A collection of example background images is included in this repository.<br><br>
+
+![Alt_Text](docs/IMG_8421.JPEG)
 
 ---
 
