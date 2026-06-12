@@ -56,9 +56,7 @@ This project uses the **Waveshare 2” Display Module**, featuring:
 | `default.bmp`   | Shown when no tune‑specific art exists |
 | `<tune>.bmp`    | (Optional) Background art matching `<tune>.sid` |
 
-Example:  
 
-Commando.sid  →  Commando.bmp
 ### **Background Art Requirements**
 
 - **Format:** `.bmp`  
@@ -69,7 +67,7 @@ A collection of example background images is included in this repository.
 
 ---
 
-## 📁 File Structure Example
+
 
 
 
