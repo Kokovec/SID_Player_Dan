@@ -70,6 +70,9 @@ A collection of example background images is included in this repository.<br><br
 
 ![Alt_Text](docs/IMG_8421.JPEG)
 
+🔗 **Product page:**  
+https://www.waveshare.com/2inch-capacitive-touch-lcd.htm
+
 ---
 
 ## 🛠️ Hardware Design Notes
