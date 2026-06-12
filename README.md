@@ -106,9 +106,6 @@ This allows the Player Pico to automatically detect dual‑SID mode and configur
 
 ![Alt_Text](docs/Sid_Player.bmp)
 
-🔗 **Product page:**  
-https://www.waveshare.com/2inch-capacitive-touch-lcd.htm
-
 
 
 # 🧩 Raspberry Pi Pico → SIDKick + SD Card + Display Pinout
