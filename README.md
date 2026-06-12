@@ -35,7 +35,9 @@ This project consists of:
   - Tune & subtune selection  
   - Playback controls  
 - Automatic background art loading based on tune filename  
-- Default artwork fallback when no tune‑specific image exists  
+- Default artwork fallback when no tune‑specific image exists <br><br>
+
+![Alt_Text](docs/IMG_8418.JPEG)
 
 ---
 
