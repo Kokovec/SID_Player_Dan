@@ -1,3 +1,41 @@
+
+The is a simple Raspberry Pi Pico based SID tune player.
+It uses three Pi Pico boards to play SID tunes from an SD Card.
+The design includes:
+A Pico2 (RP2350) board that manages the playback of SID tunes from a micro SD card
+A Pi Pico (RP2040) board that drives a 2” touch panel display 
+A Sidkick-Pico board (DAC version) that acts as the SID chip
+A 2” touchscreen display with SID tune select and playback controls
+Features include:
+Playback of mono and 2SID files
+A touchscreen display that shows:
+Tune metadata
+Tune background art
+Tune and subtune select and playback controls
+
+The Display:
+This project uses a Waveshare 2” module (Display Module) which has an IPS 240×320 capacitive touch display with 262K Colors.
+It has an onboard SD card which is used to hold the overlay control panel graphic, and SID tune background art images.
+SID tune background art images must have the same filename as its associated .sid tune (i.e. - Commando.sid <-> Commando.bmp).
+There should be an image named “default.bmp” on the SD Card that is displayed when no tune-associated art is found.
+Also, a file named “controls.bmp” must be on the card. It is the player control overlay graphic.
+The “default” and “controls” files can be found in this repo, along with a bunch of example background art images.
+
+The background images must be:
+Format = .bmp
+Size: 240x320
+Color depth: 16 bit (R5, G6, B5)
+
+
+
+
+
+
+
+
+
+
+
 # 🧩 Raspberry Pi Pico → SIDKick + SD Card + Display Pinout
 
 This table documents the full physical pin mapping between the **Raspberry Pi Pico** and connected peripherals: **SIDKick (SID chip emulator)**, **SD card**, and **Display Pico**.
