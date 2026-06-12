@@ -72,6 +72,39 @@ A collection of example background images is included in this repository.<br><br
 
 ---
 
+## 🛠️ Hardware Design Notes
+
+The overall hardware design is intentionally simple and robust, relying on minimal components to safely interface the three Pico boards, the SIDKick‑Pico, and the SD card.
+
+### **SIDKick‑Pico Bus Interface**
+
+The SIDKick‑Pico requires **3.3V ↔ 5V bidirectional level shifting** for the **8‑bit DATA bus**.  
+This ensures safe communication between the 5V‑tolerant SID socket environment and the 3.3V logic of the Pico.
+
+- The DATA bus is **bidirectional**, so proper level shifting is mandatory.
+- The ADDRESS bus and control lines are **unidirectional**, so they do not require full level shifting.
+
+### **Address & Control Lines**
+
+The ADDRESS bus (A0–A4) and control signals (`/CS`, `/RES`, PHI2, etc.) use simple **220 Ω series resistors** for protection and signal conditioning.
+
+This is sufficient because:
+- These lines are **Pico → SIDKick‑Pico only** (unidirectional)
+- The SIDKick‑Pico is designed to accept 3.3V logic on these pins
+
+### **SD Card Storage**
+
+A micro SD card connected to the Player Pico 2 holds all `.sid` files.
+
+- Standard SPI wiring is used (CS, SCK, MOSI, MISO)
+- The Player Pico streams SID register writes to the SIDKick‑Pico in real time
+
+### **2SID File Requirement**
+
+To ensure correct playback, **2SID files must include the string `2SID` in the filename**.
+This allows the Player Pico to automatically detect dual‑SID mode and configure the SIDKick‑Pico accordingly.
+
+
 
 
 
