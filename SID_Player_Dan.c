@@ -513,12 +513,13 @@ static uint8_t play_sid_file(const char *path, uint8_t *song_sel)
     /* ===== Subtune (re)start point.  CMD_NEXT_TUNE / CMD_PREV_TUNE change the
      * subtune and jump back here; file-level commands fall through to exit. ===== */
 play_subtune: ;
-    {
-        bool cia_timer = (song_idx < 32) ? (bool)((speed >> song_idx) & 1) : true;
-        play_hz = (ntsc || cia_timer) ? 60u : 50u;
-    }
-    printf("Subtune : %u/%u   Play rate: %u Hz\r\n",
-           (unsigned)(song_idx + 1), (unsigned)songs, (unsigned)play_hz);
+    /* Default the poll rate to the video standard (PAL 50 Hz / NTSC 60 Hz).  The
+     * speed-flag bit means the song is CIA-timer-timed, NOT that it runs at
+     * 60 Hz — for those we refine the rate from the timer the tune programs (see
+     * the PSID branch below). */
+    bool cia_timed = (song_idx < 32) ? (bool)((speed >> song_idx) & 1) : true;
+    play_hz = ntsc ? 60u : 50u;
+    printf("Subtune : %u/%u\r\n", (unsigned)(song_idx + 1), (unsigned)songs);
 
     /* Tell the Display which song is now playing (1-based), so it shows the
      * current subtune.  Sent on initial play and on every subtune change. */
@@ -581,6 +582,19 @@ play_subtune: ;
     call_routine(&cpu, init_addr, song_idx, 0, 0);
 
     if (play_addr != 0) {
+        /* CIA-timed PSID: if INIT programmed CIA1 timer A, derive the real poll
+         * rate from it (e.g. $4CC7 → 50 Hz on PAL) instead of leaving the
+         * video-standard default — many "speed flag set" PAL tunes are 50 Hz. */
+        if (cia_timed) {
+            uint32_t cpu_hz = ntsc ? 1022727u : 985248u;
+            uint32_t tv = ((uint32_t)cia1.timer_hi << 8) | cia1.timer_lo;
+            if (tv) {
+                uint32_t hz = (cpu_hz + (tv + 1) / 2) / (tv + 1);  /* rounded */
+                if (hz >= 20 && hz <= 300) play_hz = hz;
+            }
+        }
+        printf("PSID poll rate: %u Hz\r\n", (unsigned)play_hz);
+
         /* PSID: poll the play routine at the declared rate */
         const uint64_t frame_us  = 1000000ULL / play_hz;
         uint64_t       next_frame = time_us_64() + frame_us;
