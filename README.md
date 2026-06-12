@@ -101,18 +101,10 @@ A micro SD card connected to the Player Pico 2 holds all `.sid` files.
 
 ### **2SID File Requirement**
 
-To ensure correct playback, **2SID files must include the string `2SID` in the filename**.
-This allows the Player Pico to automatically detect dual‑SID mode and configure the SIDKick‑Pico accordingly.
+To ensure correct playback, **2SID files must include the string `2SID` in the filename**.<br>
+This allows the Player Pico to automatically detect dual‑SID mode and configure the SIDKick‑Pico accordingly.<br><br>
 
-
-
-
-
-
-
-
-
-
+![Alt_Text](docs/Sid_Player.bmp)
 
 
 
