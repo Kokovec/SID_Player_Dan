@@ -106,6 +106,9 @@ This allows the Player Pico to automatically detect dual‑SID mode and configur
 
 ![Alt_Text](docs/Sid_Player.bmp)
 
+🔗 **Product page:**  
+https://www.waveshare.com/2inch-capacitive-touch-lcd.htm
+
 
 
 # 🧩 Raspberry Pi Pico → SIDKick + SD Card + Display Pinout
@@ -200,3 +203,4 @@ This table documents the full physical pin mapping between the **Raspberry Pi Pi
 | 28 | VDD | +12 V (6581) or +9 V (8580) |
 
 ![Alt Text](docs/SIDkick_Pico_DAC.jpg)
+
