@@ -1,31 +1,75 @@
+# 🎵 Raspberry Pi Pico SID Tune Player  
+A multi‑Pico hardware project for playing Commodore 64 SID tunes from an SD card.
 
-The is a simple Raspberry Pi Pico based SID tune player.
-It uses three Pi Pico boards to play SID tunes from an SD Card.
-The design includes:
-A Pico2 (RP2350) board that manages the playback of SID tunes from a micro SD card
-A Pi Pico (RP2040) board that drives a 2” touch panel display 
-A Sidkick-Pico board (DAC version) that acts as the SID chip
-A 2” touchscreen display with SID tune select and playback controls
-Features include:
-Playback of mono and 2SID files
-A touchscreen display that shows:
-Tune metadata
-Tune background art
-Tune and subtune select and playback controls
+This system uses **three Raspberry Pi Pico boards** working together to deliver authentic SID playback, touchscreen controls, and visual artwork.
 
-The Display:
-This project uses a Waveshare 2” module (Display Module) which has an IPS 240×320 capacitive touch display with 262K Colors.
-It has an onboard SD card which is used to hold the overlay control panel graphic, and SID tune background art images.
-SID tune background art images must have the same filename as its associated .sid tune (i.e. - Commando.sid <-> Commando.bmp).
-There should be an image named “default.bmp” on the SD Card that is displayed when no tune-associated art is found.
-Also, a file named “controls.bmp” must be on the card. It is the player control overlay graphic.
-The “default” and “controls” files can be found in this repo, along with a bunch of example background art images.
+---
 
-The background images must be:
-Format = .bmp
-Size: 240x320
-Color depth: 16 bit (R5, G6, B5)
+## 🧩 System Overview
 
+This project consists of:
+
+### **1. Player Pico 2 (RP2350)**
+- Reads `.sid` files from a micro SD card  
+- Handles tune playback logic  
+- Sends SID register writes to the SIDKick‑Pico board  
+
+### **2. Display Pico (RP2040)**
+- Drives a **2” 240×320 IPS capacitive touchscreen**  
+- Shows tune metadata, background art, and playback controls  
+- Loads UI graphics from the display module’s onboard SD card  
+
+### **3. SIDKick‑Pico (DAC version)**
+- Acts as the SID chip replacement  
+- Receives register writes from the Player Pico  
+- Outputs authentic SID audio  
+
+---
+
+## ✨ Features
+
+- Playback of **mono SID** and **2SID** files  
+- Touchscreen UI with:
+  - Tune metadata  
+  - Background artwork  
+  - Tune & subtune selection  
+  - Playback controls  
+- Automatic background art loading based on tune filename  
+- Default artwork fallback when no tune‑specific image exists  
+
+---
+
+## 🖥️ Display Module Details
+
+This project uses the **Waveshare 2” Display Module**, featuring:
+
+- 240×320 IPS panel  
+- Capacitive touch  
+- 262K colors  
+- Onboard SD card (used for UI graphics and background art)
+
+### **Required Files on the Display SD Card**
+
+| Filename        | Purpose |
+|-----------------|---------|
+| `controls.bmp`  | Overlay graphic for playback controls |
+| `default.bmp`   | Shown when no tune‑specific art exists |
+| `<tune>.bmp`    | Background art matching `<tune>.sid` |
+
+Example:  
+
+Commando.sid  →  Commando.bmp
+### **Background Art Requirements**
+
+- **Format:** `.bmp`  
+- **Resolution:** `240 × 320`  
+- **Color depth:** `16‑bit` (R5 G6 B5)
+
+A collection of example background images is included in this repository.
+
+---
+
+## 📁 File Structure Example
 
 
 
