@@ -63,7 +63,7 @@ This project uses the **Waveshare 2” Display Module**, featuring:
 - **Resolution:** `240 × 320`  
 - **Color depth:** `16‑bit` (R5 G6 B5)
 
-All files should be placed into the root directory.
+All files should be placed into the root directory. <br>
 A collection of example background images is included in this repository.
 
 ---
