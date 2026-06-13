@@ -5,6 +5,11 @@ This system uses **three Raspberry Pi Pico boards** working together to deliver 
 
 ---
 
+## License
+This project is licensed under the [MIT License](LICENSE).
+
+---
+
 ## 🧩 System Overview
 
 This project consists of:
@@ -14,7 +19,7 @@ This project consists of:
 - Handles tune playback logic  
 - Sends SID register writes to the SIDKick‑Pico board  
 
-### **2. Display Pico (RP2040)**
+### **2. Display Pico (RP2040) [SID Display Github Repo](https://github.com/Kokovec/SID_Display_Dan)**
 - Drives a **2” 240×320 IPS capacitive touchscreen**  
 - Shows tune metadata, background art, and playback controls  
 - Loads UI graphics from the display module’s onboard SD card  
@@ -69,6 +74,9 @@ All files should be placed into the root directory. <br>
 A collection of example background images is included in this repository.<br><br>
 
 ![Alt_Text](docs/IMG_8421.JPEG)
+
+🔗 **Product page:**  
+https://www.waveshare.com/2inch-capacitive-touch-lcd.htm
 
 ---
 
@@ -200,3 +208,4 @@ This table documents the full physical pin mapping between the **Raspberry Pi Pi
 | 28 | VDD | +12 V (6581) or +9 V (8580) |
 
 ![Alt Text](docs/SIDkick_Pico_DAC.jpg)
+
