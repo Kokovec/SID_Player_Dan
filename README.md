@@ -5,6 +5,11 @@ This system uses **three Raspberry Pi Pico boards** working together to deliver 
 
 ---
 
+## License
+This project is licensed under the [MIT License](LICENSE).
+
+---
+
 ## 🧩 System Overview
 
 This project consists of:
