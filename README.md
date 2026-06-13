@@ -14,7 +14,7 @@ This project consists of:
 - Handles tune playback logic  
 - Sends SID register writes to the SIDKick‑Pico board  
 
-### **2. Display Pico (RP2040) [Alt_Text](https://github.com/Kokovec/SID_Display_Dan)**
+### **2. Display Pico (RP2040) [Display Github Repo](https://github.com/Kokovec/SID_Display_Dan)**
 - Drives a **2” 240×320 IPS capacitive touchscreen**  
 - Shows tune metadata, background art, and playback controls  
 - Loads UI graphics from the display module’s onboard SD card  
