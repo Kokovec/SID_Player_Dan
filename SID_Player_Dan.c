@@ -154,12 +154,6 @@ static void sid_init(void)
     sleep_ms(200);
     gpio_put(SID_RES_N, 1);
     sleep_ms(3000); /* wait for SID chip startup to complete */
-
-    /* Start Voice 3 noise LFSR running from the beginning so $D41B is
-     * non-deterministic by the time the user stops a tune. */
-    sid_write(0x0E, 0xFF);
-    sid_write(0x0F, 0xFF);
-    sid_write(0x12, 0x80);
 }
 
 /* Adjust phi2 clock divider for PAL or NTSC.
@@ -172,6 +166,17 @@ static void sid_set_clock(bool ntsc)
         pwm_set_clkdiv_int_frac(slice, 73, 5);
     else
         pwm_set_clkdiv_int_frac(slice, 76, 2);
+}
+
+/* Zero every register of both SIDs (SID2 via the $D500-detect line). */
+static void sid_silence_both(void)
+{
+    for (uint8_t r = 0; r < 0x19; r++)
+        sid_write(r, 0x00);
+    gpio_put(SID_D500, 1);
+    for (uint8_t r = 0; r < 0x19; r++)
+        sid_write(r, 0x00);
+    gpio_put(SID_D500, 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -764,15 +769,7 @@ play_subtune: ;
     *song_sel = song_idx;    /* report the last-played subtune back to the caller */
     f_close(&fil);
 
-    /* Silence both SIDs before the next tune.  SID1 directly; SID2 with the
-     * $D500-detect line high so the SIDKick routes the zero-writes to it
-     * (harmless if SID2 is disabled, e.g. a mono tune). */
-    for (uint8_t r = 0; r < 0x19; r++)
-        sid_write(r, 0x00);
-    gpio_put(SID_D500, 1);
-    for (uint8_t r = 0; r < 0x19; r++)
-        sid_write(r, 0x00);
-    gpio_put(SID_D500, 0);
+    sid_silence_both();      /* silence both SIDs before the next tune */
     sleep_ms(300);
     return stop_cmd;
 }
@@ -935,7 +932,11 @@ static void sidkick_print_config(void)
  * access. */
 static void sidkick_apply_profile(bool stereo, bool ntsc)
 {
-    static int last_profile = -1;   /* (stereo<<1)|ntsc of the last applied profile */
+    /* Assume the SIDKick boots to its flash default of mono PAL (SID2 disabled,
+     * clock=PAL — what `sidkick_print_config` always reads at boot).  Starting
+     * the cache there means a mono PAL first tune does NO config-bus access at
+     * all, so it never plays straight after a config read. */
+    static int last_profile = 0;    /* 0 = mono PAL = (stereo<<1)|ntsc */
     int profile = (stereo ? 2 : 0) | (ntsc ? 1 : 0);
     if (profile == last_profile) {
         printf("SIDKick profile unchanged (%s%s) — no config access\r\n",
@@ -949,6 +950,7 @@ static void sidkick_apply_profile(bool stereo, bool ntsc)
          * the SID and kills playback).  Leave the SIDKick config untouched and
          * do NOT cache the profile, so we retry on the next tune. */
         printf("SIDKick config read failed — leaving config unchanged\r\n");
+        sleep_ms(50);   /* let config mode expire before the tune starts writing */
         return;
     }
 
@@ -982,12 +984,14 @@ static void sidkick_apply_profile(bool stereo, bool ntsc)
         printf("SIDKick already configured for %s — no change\r\n",
                stereo ? "stereo" : "mono");
         last_profile = profile;     /* cache: skip the bus next same-profile tune */
+        sleep_ms(50);               /* let config mode expire before playback */
         return;
     }
 
     sidkick_write_config(want);
     last_profile = profile;
     printf("\r\n>>> Applied %s profile <<<\r\n", stereo ? "STEREO CENTRED" : "MONO");
+    sleep_ms(50);                   /* let config mode expire before playback */
 }
 
 int main(void)
