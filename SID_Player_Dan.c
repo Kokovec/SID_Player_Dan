@@ -543,7 +543,7 @@ static uint8_t play_sid_file(const char *path, uint8_t *song_sel)
     if (!cur_is_2sid)
         cur_stereo_mode = STEREO_NONE;
     else if (cur_stereo_mode == STEREO_NONE)
-        cur_stereo_mode = STEREO_CENTER;     /* default for a 2SID: centre balanced */
+        cur_stereo_mode = STEREO_PANNED;     /* default for a 2SID: panned stereo */
     bool panned = (cur_stereo_mode == STEREO_PANNED);
     printf("\r\n%s tune detected\r\n", cur_is_2sid ? "2SID stereo" : "Mono");
     sidkick_apply_profile(cur_is_2sid, panned, ntsc);   /* prints what it actually did */
@@ -1096,8 +1096,8 @@ int main(void)
         if (reset_song) {
             uint16_t start = be16(h->start_song);
             song_sel   = (start >= 1) ? (uint8_t)(start - 1) : 0;
-            /* New file: default a 2SID to centre balanced, clear state otherwise. */
-            cur_stereo_mode = cur_is_2sid ? STEREO_CENTER : STEREO_NONE;
+            /* New file: default a 2SID to panned stereo, clear state otherwise. */
+            cur_stereo_mode = cur_is_2sid ? STEREO_PANNED : STEREO_NONE;
             reset_song = false;
         } else if (!cur_is_2sid) {
             cur_stereo_mode = STEREO_NONE;
