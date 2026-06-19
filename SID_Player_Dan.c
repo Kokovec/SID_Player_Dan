@@ -213,6 +213,26 @@ static void send_meta(const SidMeta *m)
     uart_tx_program_putc(pio_uart, pio_tx_sm, chk);
 }
 
+/* Current-file 2SID stereo tracking, reported to the Display in STATE packets.
+ * cur_is_2sid is set from the SID header on every file (re)load; cur_stereo_mode
+ * is STEREO_NONE for a non-2SID, else STEREO_CENTER / STEREO_PANNED. */
+static bool    cur_is_2sid     = false;
+static uint8_t cur_stereo_mode = STEREO_NONE;
+
+/* Send the single-byte 2SID stereo STATE packet to the Display. */
+static void send_state(uint8_t state)
+{
+    uint8_t len = 1;
+    uint8_t chk = PKT_TYPE_STATE ^ len ^ state;
+
+    uart_tx_program_putc(pio_uart, pio_tx_sm, PKT_HDR0);
+    uart_tx_program_putc(pio_uart, pio_tx_sm, PKT_HDR1);
+    uart_tx_program_putc(pio_uart, pio_tx_sm, PKT_TYPE_STATE);
+    uart_tx_program_putc(pio_uart, pio_tx_sm, len);
+    uart_tx_program_putc(pio_uart, pio_tx_sm, state);
+    uart_tx_program_putc(pio_uart, pio_tx_sm, chk);
+}
+
 /* Returns the CMD_* payload byte when a valid command packet arrives,
  * or 0 if the RX FIFO has no complete packet yet. */
 static uint8_t poll_cmd(void)
@@ -371,16 +391,19 @@ static bool is_sid_file(const char *name)
     return false;
 }
 
-/* True if the filename contains "2SID" (case-insensitive) → stereo tune. */
-static bool is_2sid_file(const char *name)
+/* True if the header describes a 2SID (stereo) tune: PSID/RSID v3+ with a
+ * non-zero second-SID address field (header offset 0x7A). */
+static bool header_is_2sid(const SIDHeader *h)
 {
-    for (const char *p = name; *p; p++) {
-        if ((p[0] == '2') &&
-            (p[1] == 's' || p[1] == 'S') &&
-            (p[2] == 'i' || p[2] == 'I') &&
-            (p[3] == 'd' || p[3] == 'D'))
-            return true;
-    }
+    return be16(h->version) >= 3 && h->second_sid_addr != 0;
+}
+
+/* Decode the video standard from the header flags (v2+).  1=PAL, 2=NTSC,
+ * 3=both → prefer PAL.  v1 files have no flags → PAL. */
+static bool header_is_ntsc(const SIDHeader *h)
+{
+    if (be16(h->version) >= 2 && be16(h->data_offset) >= 0x7C)
+        return (((be16(h->flags) >> 2) & 0x3) == 2);
     return false;
 }
 
@@ -417,8 +440,38 @@ static bool read_sid_header(const char *path, uint8_t hdr[0x7C])
     return memcmp(h->magic, "PSID", 4) == 0 || memcmp(h->magic, "RSID", 4) == 0;
 }
 
-/* Defined below, after the SD helpers — applies the mono/stereo SIDKick profile. */
-static void sidkick_apply_profile(bool stereo, bool ntsc);
+/* Defined below, after the SD helpers — applies the mono/stereo SIDKick profile.
+ * stereo=true enables SID2; panned (2SID only) selects hard L/R vs centre. */
+static void sidkick_apply_profile(bool stereo, bool panned, bool ntsc);
+
+/* Handle commands that do NOT stop playback: metadata/state resync requests and
+ * 2SID stereo-mode selection.  Returns true if cmd was consumed (the caller's
+ * play/idle loop should treat it as handled and keep going).  song_num is 1-based.
+ *
+ * allow_stereo gates the mono/stereo buttons: they are honoured only while idle
+ * (allow_stereo=true).  During playback the caller passes false so the buttons
+ * are ignored entirely — the SIDKick profile is fixed for the duration of a tune. */
+static bool handle_aux_cmd(uint8_t cmd, const SIDHeader *h, const char *path,
+                           uint8_t song_num, bool allow_stereo)
+{
+    if (cmd == CMD_REQUEST_META) {
+        /* Display (re)synced after a reset: resend both metadata and state. */
+        send_meta_from_header(h, path, song_num);
+        send_state(cur_stereo_mode);
+        return true;
+    }
+    if (allow_stereo && (cmd == CMD_STEREO_CENTER || cmd == CMD_STEREO_PANNED)) {
+        /* A mono SID ignores the command entirely (SIDKick config untouched).
+         * For a 2SID we only RECORD the requested mode and echo it back; the
+         * SIDKick is reconfigured exclusively at play-start in play_sid_file().
+         * So the selected mode takes effect the next time this file is played. */
+        if (cur_is_2sid)
+            cur_stereo_mode = (cmd == CMD_STEREO_PANNED) ? STEREO_PANNED : STEREO_CENTER;
+        send_state(cur_is_2sid ? cur_stereo_mode : STEREO_NONE);
+        return true;
+    }
+    return false;
+}
 
 /* Load a SID file from the SD card, run INIT, then call PLAY at the correct rate
  * until CMD_NEXT, CMD_PREV, or CMD_STOP is received.  CMD_NEXT_TUNE/PREV_TUNE
@@ -457,7 +510,6 @@ static uint8_t play_sid_file(const char *path, uint8_t *song_sel)
         return 0;
     }
 
-    uint16_t version     = be16(h->version);
     uint16_t data_offset = be16(h->data_offset);
     uint16_t load_addr   = be16(h->load_address);
     uint16_t init_addr   = be16(h->init_address);
@@ -466,11 +518,7 @@ static uint8_t play_sid_file(const char *path, uint8_t *song_sel)
     uint32_t speed       = be32(h->speed);
 
     /* Determine clock (PAL / NTSC) from the header flags — per file. */
-    bool ntsc = false;
-    if (version >= 2 && data_offset >= 0x7C) {
-        uint8_t clk = (be16(h->flags) >> 2) & 0x3;
-        ntsc = (clk == 2);  /* 1=PAL, 2=NTSC, 3=both → prefer PAL */
-    }
+    bool ntsc = header_is_ntsc(h);
     uint16_t songs    = be16(h->songs); if (songs == 0) songs = 1;
     uint8_t  song_idx = *song_sel;          /* caller-selected starting subtune */
     if (song_idx >= songs) song_idx = 0;
@@ -488,12 +536,17 @@ static uint8_t play_sid_file(const char *path, uint8_t *song_sel)
     printf("Clock   : %s\r\n", ntsc ? "NTSC" : "PAL");
 
     /* Configure the SIDKick for this file (per file, not per subtune): stereo if
-     * the filename contains "2SID", otherwise mono.  Clock field tracks PAL/NTSC.
-     * Done before sid_set_clock() because the config write temporarily slows
-     * phi2 and restores it to PAL. */
-    bool stereo = is_2sid_file(path);
-    printf("\r\n%s tune detected\r\n", stereo ? "2SID stereo" : "Mono");
-    sidkick_apply_profile(stereo, ntsc);   /* prints what it actually did */
+     * the header marks a 2SID (v3+ with a second-SID address), otherwise mono.
+     * Clock field tracks PAL/NTSC.  Done before sid_set_clock() because the
+     * config write temporarily slows phi2 and restores it to PAL. */
+    cur_is_2sid = header_is_2sid(h);
+    if (!cur_is_2sid)
+        cur_stereo_mode = STEREO_NONE;
+    else if (cur_stereo_mode == STEREO_NONE)
+        cur_stereo_mode = STEREO_CENTER;     /* default for a 2SID: centre balanced */
+    bool panned = (cur_stereo_mode == STEREO_PANNED);
+    printf("\r\n%s tune detected\r\n", cur_is_2sid ? "2SID stereo" : "Mono");
+    sidkick_apply_profile(cur_is_2sid, panned, ntsc);   /* prints what it actually did */
     sid_set_clock(ntsc);
 
     /* Resolve the load address and where the binary data starts — once. */
@@ -527,8 +580,10 @@ play_subtune: ;
     printf("Subtune : %u/%u\r\n", (unsigned)(song_idx + 1), (unsigned)songs);
 
     /* Tell the Display which song is now playing (1-based), so it shows the
-     * current subtune.  Sent on initial play and on every subtune change. */
+     * current subtune.  Sent on initial play and on every subtune change.  The
+     * STATE packet keeps the Display's 2SID stereo label/buttons in sync. */
     send_meta_from_header(h, path, (uint8_t)(song_idx + 1));
+    send_state(cur_stereo_mode);
 
     rsid_irq_active = false;
 
@@ -615,15 +670,13 @@ play_subtune: ;
                 dbg_sid_writes = 0;
             }
             stop_cmd = poll_cmd();
-            if (stop_cmd == CMD_REQUEST_META) {  /* resend current song; keep playing */
-                send_meta_from_header(h, path, (uint8_t)(song_idx + 1));
+            /* Resync requests are handled here; stereo buttons are ignored while
+             * playing (allow_stereo=false) so the profile is fixed per tune. */
+            if (handle_aux_cmd(stop_cmd, h, path, (uint8_t)(song_idx + 1), false))
                 stop_cmd = 0;
-            }
             if (stop_cmd == CMD_NEXT || stop_cmd == CMD_PREV || stop_cmd == CMD_STOP ||
                 stop_cmd == CMD_NEXT_TUNE || stop_cmd == CMD_PREV_TUNE)
                 break;
-            if (stop_cmd == CMD_REQUEST_META)
-                send_meta_from_header(h, path, (uint8_t)(song_idx + 1));
             while (time_us_64() < next_frame)
                 ;
             next_frame += frame_us;
@@ -738,15 +791,13 @@ play_subtune: ;
             }
 
             stop_cmd = poll_cmd();
-            if (stop_cmd == CMD_REQUEST_META) {  /* resend current song; keep playing */
-                send_meta_from_header(h, path, (uint8_t)(song_idx + 1));
+            /* Resync requests are handled here; stereo buttons are ignored while
+             * playing (allow_stereo=false) so the profile is fixed per tune. */
+            if (handle_aux_cmd(stop_cmd, h, path, (uint8_t)(song_idx + 1), false))
                 stop_cmd = 0;
-            }
             if (stop_cmd == CMD_NEXT || stop_cmd == CMD_PREV || stop_cmd == CMD_STOP ||
                 stop_cmd == CMD_NEXT_TUNE || stop_cmd == CMD_PREV_TUNE)
                 break;
-            if (stop_cmd == CMD_REQUEST_META)
-                send_meta_from_header(h, path, (uint8_t)(song_idx + 1));
             while (time_us_64() < next_frame)
                 ;
             next_frame += frame_us;
@@ -921,26 +972,29 @@ static void sidkick_print_config(void)
     sidkick_print_config_decoded(cfg);
 }
 
-/* Apply the mono or stereo-centered profile.  Overlays only the relevant indices
- * onto the current config (filter calibration/checksums preserved) and writes
- * back only if something changed.  stereo=false → mono, stereo=true → stereo.
+/* Apply the mono or stereo profile.  Overlays only the relevant indices onto the
+ * current config (filter calibration/checksums preserved) and writes back only if
+ * something changed.  stereo=false → mono; stereo=true → 2SID, with panned
+ * selecting hard L/R (SID1 left, SID2 right) vs centre balanced.
  *
  * Crucially: touch the config bus ONLY when the profile actually changes.  Every
  * config read/write switches phi2 to 294 kHz and enters config mode; doing that
  * per-tune eventually leaves the SIDKick deaf to SID writes (recoverable only by
  * a 5 V power cycle — not /RES).  So a run of same-profile tunes does ZERO config
  * access. */
-static void sidkick_apply_profile(bool stereo, bool ntsc)
+static void sidkick_apply_profile(bool stereo, bool panned, bool ntsc)
 {
     /* Assume the SIDKick boots to its flash default of mono PAL (SID2 disabled,
      * clock=PAL — what `sidkick_print_config` always reads at boot).  Starting
      * the cache there means a mono PAL first tune does NO config-bus access at
      * all, so it never plays straight after a config read. */
-    static int last_profile = 0;    /* 0 = mono PAL = (stereo<<1)|ntsc */
-    int profile = (stereo ? 2 : 0) | (ntsc ? 1 : 0);
+    static int last_profile = 0;    /* 0 = mono PAL = (stereo<<2)|(panned<<1)|ntsc */
+    int profile = (stereo ? 4 : 0) | (panned ? 2 : 0) | (ntsc ? 1 : 0);
     if (profile == last_profile) {
-        printf("SIDKick profile unchanged (%s%s) — no config access\r\n",
-               stereo ? "stereo" : "mono", ntsc ? ", NTSC" : "");
+        printf("SIDKick profile unchanged (%s%s%s) — no config access\r\n",
+               stereo ? "stereo" : "mono",
+               (stereo && panned) ? ", panned" : (stereo ? ", centre" : ""),
+               ntsc ? ", NTSC" : "");
         return;
     }
 
@@ -968,7 +1022,11 @@ static void sidkick_apply_profile(bool stereo, bool ntsc)
         want[8]  = 1;    /* SID2 = 8580 (enabled) */
         want[10] = 2;    /* SID2 address = $D500  */
         want[11] = 14;   /* SID2 volume max       */
-        want[12] = 7;    /* panning centred       */
+        /* cfg[58] is the GLOBAL L/R balance and stays centred (7, from the common
+         * block) for both channels to play at equal level.  Stereo separation is
+         * done with the panning control (cfg[12]) alone: 7 = centred, 14 = full
+         * hard L/R split between SID1 and SID2. */
+        want[12] = panned ? 14 : 7;
     } else {
         want[1]  = 12;   /* SID1 digiboost     */
         want[8]  = 3;    /* SID2 disabled (mono) */
@@ -990,7 +1048,8 @@ static void sidkick_apply_profile(bool stereo, bool ntsc)
 
     sidkick_write_config(want);
     last_profile = profile;
-    printf("\r\n>>> Applied %s profile <<<\r\n", stereo ? "STEREO CENTRED" : "MONO");
+    printf("\r\n>>> Applied %s profile <<<\r\n",
+           stereo ? (panned ? "STEREO PANNED" : "STEREO CENTRED") : "MONO");
     sleep_ms(50);                   /* let config mode expire before playback */
 }
 
@@ -1033,28 +1092,37 @@ int main(void)
         }
         const SIDHeader *h = (const SIDHeader *)hdr;
         uint16_t songs = be16(h->songs); if (songs == 0) songs = 1;
+        cur_is_2sid = header_is_2sid(h);
         if (reset_song) {
             uint16_t start = be16(h->start_song);
             song_sel   = (start >= 1) ? (uint8_t)(start - 1) : 0;
+            /* New file: default a 2SID to centre balanced, clear state otherwise. */
+            cur_stereo_mode = cur_is_2sid ? STEREO_CENTER : STEREO_NONE;
             reset_song = false;
+        } else if (!cur_is_2sid) {
+            cur_stereo_mode = STEREO_NONE;
         }
         if (song_sel >= songs) song_sel = 0;
 
-        /* Show the (selected) song on the Display */
+        /* Show the (selected) song and its 2SID stereo state on the Display */
         send_meta_from_header(h, path, (uint8_t)(song_sel + 1));
+        send_state(cur_stereo_mode);
 
         /* Wait for an actionable command.  While idle, NEXT_TUNE/PREV_TUNE select
-         * the subtune to play (within this file); REQUEST_META resends. */
+         * the subtune to play (within this file); REQUEST_META resends metadata +
+         * state; the stereo commands record the 2SID mode for the next play. */
         uint8_t cmd = 0;
         for (;;) {
             cmd = poll_cmd();
             if (cmd == CMD_PLAY || cmd == CMD_NEXT || cmd == CMD_PREV)
                 break;
+            if (handle_aux_cmd(cmd, h, path, (uint8_t)(song_sel + 1), true))
+                continue;   /* REQUEST_META / stereo change: meta+state already sent */
             if (cmd == CMD_NEXT_TUNE)
                 song_sel = (uint8_t)((song_sel + 1) % songs);
             else if (cmd == CMD_PREV_TUNE)
                 song_sel = (song_sel == 0) ? (uint8_t)(songs - 1) : (uint8_t)(song_sel - 1);
-            else if (cmd != CMD_REQUEST_META)
+            else
                 continue;   /* CMD_STOP / 0: nothing to do, keep waiting */
             send_meta_from_header(h, path, (uint8_t)(song_sel + 1));  /* reflect selection */
         }

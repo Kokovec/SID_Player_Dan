@@ -19,27 +19,15 @@
 // Packet types
 #define PKT_TYPE_META   0x01    // Player → Display : song metadata
 #define PKT_TYPE_CMD    0x02    // Display → Player : command
-#define PKT_TYPE_STATE  0x03    // Player → Display : stereo state (2SID)
 
 // Commands (single-byte payload in a CMD packet)
 #define CMD_PLAY        0x01    // play current file
 #define CMD_NEXT        0x02    // advance to next file, send metadata, wait
 #define CMD_PREV        0x04    // go to previous file, send metadata, wait
 #define CMD_STOP        0x05    // stop playback, stay on current file, wait
-#define CMD_NEXT_TUNE     0x06    // next subtune within the current SID file
-#define CMD_PREV_TUNE     0x07    // previous subtune within the current SID file
-#define CMD_REQUEST_META  0x08    // request Player to re-send current metadata
-#define CMD_STEREO_CENTER 0x09    // 2SID: play L/R center balanced  (-> "Mono")
-#define CMD_STEREO_PANNED 0x0A    // 2SID: play L left, R right       (-> "Stereo")
-
-// -----------------------------------------------------------------------
-// Stereo state payload  (Player → Display, single byte in a STATE packet)
-// The Player reports this when a 2SID file is played, and sends
-// STEREO_NONE to clear it whenever the current file is not a 2SID.
-// -----------------------------------------------------------------------
-#define STEREO_NONE     0x00    // not a 2SID file: hide state, disable buttons
-#define STEREO_CENTER   0x01    // L/R center balanced -> show "Mono"
-#define STEREO_PANNED   0x02    // L/R panned          -> show "Stereo"
+#define CMD_NEXT_TUNE   0x06    // next subtune within the current SID file
+#define CMD_PREV_TUNE   0x07    // previous subtune within the current SID file
+#define CMD_REQUEST_META 0x08   // Display → Player: resend current metadata
 
 // -----------------------------------------------------------------------
 // Metadata payload  (Player → Display)
