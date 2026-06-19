@@ -38,7 +38,8 @@ This project consists of:
   - Tune metadata  
   - Background artwork  
   - Tune & subtune selection  
-  - Playback controls  
+  - Playback controls
+  - Mono or Stereo playback selection for 2SID files
 - Automatic background art loading based on tune filename  
 - Default artwork fallback when no tune‑specific image exists <br><br>
 
