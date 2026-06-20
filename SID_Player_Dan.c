@@ -197,6 +197,41 @@ static void pio_uart_init(void)
     uart_rx_program_init(pio_uart, pio_rx_sm, rx_off, PIO_UART_RX_PIN, SID_BAUD_RATE);
 }
 
+/* ------------------------------------------------------------------ */
+/* Onboard LED activity indicator (GP25 on the Pico 2).  Pulsed on every
+ * packet sent to / valid command received from the Display.  Non-blocking:
+ * led_activity() lights it and arms an off-time; led_update(), called from the
+ * play/idle loops, switches it off so playback timing is never stalled. */
+
+#ifndef PICO_DEFAULT_LED_PIN
+#define PICO_DEFAULT_LED_PIN 25
+#endif
+#define LED_PIN        PICO_DEFAULT_LED_PIN
+#define LED_PULSE_US   50000u   /* on-time per blink */
+
+static uint64_t led_off_at = 0;
+
+static void led_init(void)
+{
+    gpio_init(LED_PIN);
+    gpio_set_dir(LED_PIN, GPIO_OUT);
+    gpio_put(LED_PIN, 0);
+}
+
+static void led_activity(void)
+{
+    gpio_put(LED_PIN, 1);
+    led_off_at = time_us_64() + LED_PULSE_US;
+}
+
+static void led_update(void)
+{
+    if (led_off_at && time_us_64() >= led_off_at) {
+        gpio_put(LED_PIN, 0);
+        led_off_at = 0;
+    }
+}
+
 static void send_meta(const SidMeta *m)
 {
     uint8_t len = sizeof(SidMeta);
@@ -204,6 +239,7 @@ static void send_meta(const SidMeta *m)
     const uint8_t *p = (const uint8_t *)m;
     for (uint8_t i = 0; i < len; i++) chk ^= p[i];
 
+    led_activity();   /* blink on TX */
     uart_tx_program_putc(pio_uart, pio_tx_sm, PKT_HDR0);
     uart_tx_program_putc(pio_uart, pio_tx_sm, PKT_HDR1);
     uart_tx_program_putc(pio_uart, pio_tx_sm, PKT_TYPE_META);
@@ -225,6 +261,7 @@ static void send_state(uint8_t state)
     uint8_t len = 1;
     uint8_t chk = PKT_TYPE_STATE ^ len ^ state;
 
+    led_activity();   /* blink on TX */
     uart_tx_program_putc(pio_uart, pio_tx_sm, PKT_HDR0);
     uart_tx_program_putc(pio_uart, pio_tx_sm, PKT_HDR1);
     uart_tx_program_putc(pio_uart, pio_tx_sm, PKT_TYPE_STATE);
@@ -251,7 +288,10 @@ static uint8_t poll_cmd(void)
             case PL: payload = b; chk ^= b; state = CK; break;
             case CK:
                 state = H0;
-                if (b == chk && type == PKT_TYPE_CMD) return payload;
+                if (b == chk && type == PKT_TYPE_CMD) {
+                    led_activity();   /* blink on RX of a valid command */
+                    return payload;
+                }
                 break;
         }
     }
@@ -669,6 +709,7 @@ play_subtune: ;
                 dbg_t0 = time_us_64(); dbg_n = 0;
                 dbg_sid_writes = 0;
             }
+            led_update();   /* clear the activity LED once its pulse elapses */
             stop_cmd = poll_cmd();
             /* Resync requests are handled here; stereo buttons are ignored while
              * playing (allow_stereo=false) so the profile is fixed per tune. */
@@ -790,6 +831,7 @@ play_subtune: ;
                 dbg_sid_writes = 0;
             }
 
+            led_update();   /* clear the activity LED once its pulse elapses */
             stop_cmd = poll_cmd();
             /* Resync requests are handled here; stereo buttons are ignored while
              * playing (allow_stereo=false) so the profile is fixed per tune. */
@@ -814,6 +856,10 @@ play_subtune: ;
             song_idx = (uint8_t)((song_idx + 1) % songs);
         else
             song_idx = (song_idx == 0) ? (uint8_t)(songs - 1) : (uint8_t)(song_idx - 1);
+        /* Zero every voice on both SIDs so the previous subtune stops ringing —
+         * the next subtune's INIT only programs the registers it uses and would
+         * otherwise leave old gated notes sounding. */
+        sid_silence_both();
         goto play_subtune;   /* play_subtune sends the updated song to the Display */
     }
 
@@ -1056,6 +1102,7 @@ static void sidkick_apply_profile(bool stereo, bool panned, bool ntsc)
 int main(void)
 {
     stdio_init_all();
+    led_init();
     pio_uart_init();
     sid_init();
     sidkick_print_config();   /* show current SIDKick config at boot */
@@ -1113,6 +1160,7 @@ int main(void)
          * state; the stereo commands record the 2SID mode for the next play. */
         uint8_t cmd = 0;
         for (;;) {
+            led_update();   /* clear the activity LED once its pulse elapses */
             cmd = poll_cmd();
             if (cmd == CMD_PLAY || cmd == CMD_NEXT || cmd == CMD_PREV)
                 break;
