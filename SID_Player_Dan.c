@@ -447,6 +447,24 @@ static bool header_is_ntsc(const SIDHeader *h)
     return false;
 }
 
+/* SID chip model for the n-th SID (which = 1, 2 or 3) taken from the v2+ header
+ * flags, returned as a SIDKick type byte: 0 = 6581, 1 = 8580.
+ * Header model bits: 00=unknown, 01=6581, 10=8580, 11=both.  Anything that isn't
+ * explicitly 6581 (unknown / 8580 / both) defaults to 8580 (the player's default
+ * and the more forgiving choice for "both").  v1 files have no model flags → 8580. */
+static uint8_t header_sid_type(const SIDHeader *h, int which)
+{
+    if (be16(h->version) < 2) return 1;          /* no model info → 8580 */
+    uint16_t flags = be16(h->flags);
+    uint8_t  model;
+    switch (which) {
+        case 2:  model = (flags >> 6) & 0x3; break;   /* SID2 */
+        case 3:  model = (flags >> 8) & 0x3; break;   /* SID3 */
+        default: model = (flags >> 4) & 0x3; break;   /* SID1 */
+    }
+    return (model == 1) ? 0 : 1;                  /* 6581 → 0, else 8580 → 1 */
+}
+
 /* Build a SidMeta from an already-parsed header and send it to the Display Pico.
  * song_num is 1-based; pass 0 to use the file's default start song. */
 static void send_meta_from_header(const SIDHeader *h, const char *path, uint8_t song_num)
@@ -481,8 +499,11 @@ static bool read_sid_header(const char *path, uint8_t hdr[0x7C])
 }
 
 /* Defined below, after the SD helpers — applies the mono/stereo SIDKick profile.
- * stereo=true enables SID2; panned (2SID only) selects hard L/R vs centre. */
-static void sidkick_apply_profile(bool stereo, bool panned, bool ntsc);
+ * stereo=true enables SID2; panned (2SID only) selects hard L/R vs centre.
+ * sid1_type/sid2_type are SIDKick chip-type bytes (0=6581, 1=8580) from the
+ * SID header; sid2_type is ignored when mono. */
+static void sidkick_apply_profile(bool stereo, bool panned, bool ntsc,
+                                  uint8_t sid1_type, uint8_t sid2_type);
 
 /* Handle commands that do NOT stop playback: metadata/state resync requests and
  * 2SID stereo-mode selection.  Returns true if cmd was consumed (the caller's
@@ -585,8 +606,13 @@ static uint8_t play_sid_file(const char *path, uint8_t *song_sel)
     else if (cur_stereo_mode == STEREO_NONE)
         cur_stereo_mode = STEREO_PANNED;     /* default for a 2SID: panned stereo */
     bool panned = (cur_stereo_mode == STEREO_PANNED);
-    printf("\r\n%s tune detected\r\n", cur_is_2sid ? "2SID stereo" : "Mono");
-    sidkick_apply_profile(cur_is_2sid, panned, ntsc);   /* prints what it actually did */
+    uint8_t sid1_type = header_sid_type(h, 1);
+    uint8_t sid2_type = header_sid_type(h, 2);
+    printf("\r\n%s tune detected  (SID1=%s%s)\r\n",
+           cur_is_2sid ? "2SID stereo" : "Mono",
+           sid1_type == 0 ? "6581" : "8580",
+           cur_is_2sid ? (sid2_type == 0 ? ", SID2=6581" : ", SID2=8580") : "");
+    sidkick_apply_profile(cur_is_2sid, panned, ntsc, sid1_type, sid2_type);  /* prints what it did */
     sid_set_clock(ntsc);
 
     /* Resolve the load address and where the binary data starts — once. */
@@ -1028,14 +1054,22 @@ static void sidkick_print_config(void)
  * per-tune eventually leaves the SIDKick deaf to SID writes (recoverable only by
  * a 5 V power cycle — not /RES).  So a run of same-profile tunes does ZERO config
  * access. */
-static void sidkick_apply_profile(bool stereo, bool panned, bool ntsc)
+static void sidkick_apply_profile(bool stereo, bool panned, bool ntsc,
+                                  uint8_t sid1_type, uint8_t sid2_type)
 {
-    /* Assume the SIDKick boots to its flash default of mono PAL (SID2 disabled,
-     * clock=PAL — what `sidkick_print_config` always reads at boot).  Starting
-     * the cache there means a mono PAL first tune does NO config-bus access at
-     * all, so it never plays straight after a config read. */
-    static int last_profile = 0;    /* 0 = mono PAL = (stereo<<2)|(panned<<1)|ntsc */
-    int profile = (stereo ? 4 : 0) | (panned ? 2 : 0) | (ntsc ? 1 : 0);
+    /* SID2 type only matters when stereo; mono always disables it (3). */
+    uint8_t sid2 = stereo ? sid2_type : 3;   /* 3 = disabled */
+
+    /* Cache key folds in everything that affects the written config: the two SID
+     * chip types plus stereo/panned/clock.  A run of tunes with the same key does
+     * ZERO config-bus access — important because every config read/write slows
+     * phi2 to 294 kHz and can leave the SIDKick deaf to SID writes (recoverable
+     * only by a 5 V power cycle).  Seed it with the SIDKick's assumed flash
+     * default (SID1=8580, SID2 disabled, mono, PAL) so a matching first tune
+     * needs no config access and never plays straight after a config read. */
+    static int last_profile = 1 | (3 << 2);   /* 8580 / disabled / mono / PAL */
+    int profile = (sid1_type & 3) | ((sid2 & 3) << 2)
+                | (stereo ? 0x10 : 0) | (panned ? 0x20 : 0) | (ntsc ? 0x40 : 0);
     if (profile == last_profile) {
         printf("SIDKick profile unchanged (%s%s%s) — no config access\r\n",
                stereo ? "stereo" : "mono",
@@ -1057,24 +1091,26 @@ static void sidkick_apply_profile(bool stereo, bool panned, bool ntsc)
     uint8_t want[64];
     memcpy(want, cfg, 64);
 
-    /* Common to both profiles */
-    want[0]  = 1;             /* SID1 = 8580            */
+    /* Common to both profiles.  SID1 chip type comes from the file header
+     * (0=6581, 1=8580); digiboost only makes sense on the 8580, so it is enabled
+     * for 8580 and off for 6581. */
+    want[0]  = sid1_type;            /* SID1 chip from header  */
+    want[1]  = (sid1_type == 1) ? 12 : 0;  /* digiboost: 8580 only */
     want[2]  = 1;             /* register reads enabled */
     want[3]  = 14;            /* SID1 volume max        */
     want[58] = 7;             /* balance centre         */
     want[59] = ntsc ? 1 : 0;  /* clock tracks SID header: 0=PAL, 1=NTSC */
 
     if (stereo) {
-        want[8]  = 1;    /* SID2 = 8580 (enabled) */
-        want[10] = 2;    /* SID2 address = $D500  */
-        want[11] = 14;   /* SID2 volume max       */
+        want[8]  = sid2;     /* SID2 chip from header (enabled) */
+        want[10] = 2;        /* SID2 address = $D500  */
+        want[11] = 14;       /* SID2 volume max       */
         /* cfg[58] is the GLOBAL L/R balance and stays centred (7, from the common
          * block) for both channels to play at equal level.  Stereo separation is
          * done with the panning control (cfg[12]) alone: 7 = centred, 14 = full
          * hard L/R split between SID1 and SID2. */
         want[12] = panned ? 14 : 7;
     } else {
-        want[1]  = 12;   /* SID1 digiboost     */
         want[8]  = 3;    /* SID2 disabled (mono) */
         want[60] = 16;   /* pot filter default */
         want[61] = 0;    /* digi detect off    */
